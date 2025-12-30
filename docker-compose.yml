@@ -1,0 +1,153 @@
+version: "3.8"
+
+services:
+  # ===========================================================================
+  # Database
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: archive-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Matrix Homeserver (Synapse)
+  # ===========================================================================
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: archive-synapse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/synapse:/data
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    ports:
+      - "8008:8008"  # Matrix client API (for local dev)
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Messenger Bridge (mautrix-meta)
+  # ===========================================================================
+  mautrix-meta:
+    image: dock.mau.dev/mautrix/meta:latest
+    container_name: archive-mautrix-meta
+    restart: unless-stopped
+    depends_on:
+      - synapse
+      - postgres
+    volumes:
+      - ./config/mautrix-meta:/data
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Archive Service (Python - Matrix event listener)
+  # ===========================================================================
+  archive-service:
+    build:
+      context: ./archive-service
+      dockerfile: Dockerfile
+    container_name: archive-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      synapse:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://archive:archivepass123@postgres:5432/messenger_archive
+      MATRIX_HOMESERVER_URL: http://synapse:8008
+      MATRIX_USER_ID: "@archive:archive.local"
+      MATRIX_PASSWORD: "archivepass123"
+      ARCHIVE_ROOM_FILTER: "General Chat - Manila Dialectics Society"
+    volumes:
+      - ./archive-service/src:/app/src:ro
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # API (FastAPI)
+  # ===========================================================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: archive-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      ARCHIVE_PASSWORD_HASH: ${ARCHIVE_PASSWORD_HASH}
+      SESSION_SECRET: ${SESSION_SECRET}
+      API_HOST: ${API_HOST}
+      API_PORT: ${API_PORT}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api/src:/app/src:ro
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Element Web (Matrix client)
+  # ===========================================================================
+  element:
+    image: vectorim/element-web:latest
+    container_name: archive-element
+    restart: unless-stopped
+    depends_on:
+      - synapse
+    volumes:
+      - ./config/element/config.json:/app/config.json:ro
+    ports:
+      - "8080:80"
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Web (Next.js)
+  # ===========================================================================
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: archive-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web/src:/app/src:ro
+      - ./web/public:/app/public:ro
+    networks:
+      - archive-network
+
+volumes:
+  postgres_data:
+  synapse_data:
+
+networks:
+  archive-network:
+    driver: bridge

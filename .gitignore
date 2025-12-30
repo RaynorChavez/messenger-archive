@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Docker volumes (local dev)
+data/
+postgres_data/
+
+# Logs
+*.log
+logs/
+
+# Matrix/Bridge data (contains sensitive tokens)
+config/dendrite/*.db
+config/dendrite/*.pem
+config/dendrite/*.signing.key
+config/synapse/*.db
+config/synapse/*.signing.key
+config/synapse/*.log.config
+config/synapse/media_store/
+config/mautrix-meta/*.db
+config/mautrix-meta/registration.yaml
+
+# Secrets
+*.pem
+*.key

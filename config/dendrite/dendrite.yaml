@@ -1,0 +1,64 @@
+version: 2
+
+global:
+  server_name: archive.local
+  private_key: /etc/dendrite/matrix_key.pem
+  key_validity_period: 168h0m0s
+  
+  database:
+    connection_string: postgresql://archive:archivepass123@postgres:5432/messenger_archive?sslmode=disable
+    max_open_conns: 90
+    max_idle_conns: 5
+    conn_max_lifetime: -1
+
+  cache:
+    max_size_estimated: 1gb
+    max_age: 1h
+
+  jetstream:
+    storage_path: /var/dendrite/jetstream
+    in_memory: false
+
+  metrics:
+    enabled: false
+
+  dns_cache:
+    enabled: false
+
+logging:
+  - type: std
+    level: info
+
+app_service_api:
+  config_files:
+    - /etc/dendrite/mautrix-meta-registration.yaml
+
+client_api:
+  registration_disabled: true
+  guests_disabled: true
+  registration_shared_secret: ""
+
+federation_api:
+  send_max_retries: 16
+  disable_tls_validation: false
+  disable_http_keepalives: false
+  key_perspectives:
+    - server_name: matrix.org
+      keys:
+        - key_id: ed25519:auto
+          public_key: Noi6WqcDj0QmPxCNQqgezwTlBKrfqehY1u2FyWP9uYw
+        - key_id: ed25519:a]V
+          public_key: l8Hft5qXKn1vfHrg3p4+W8gELQVo8N13JkluMfmn2sQ
+
+media_api:
+  base_path: /var/dendrite/media
+  max_file_size_bytes: 10485760
+  dynamic_thumbnails: false
+
+mscs:
+  mscs: []
+
+sync_api:
+  real_ip_header: X-Real-IP
+  search:
+    enabled: false
