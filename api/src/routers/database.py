@@ -5,7 +5,7 @@ from typing import Optional, List, Any
 from datetime import datetime
 from pydantic import BaseModel
 
-from ..db import get_db, Message, Person, Room
+from ..db import get_db, Message, Person, Room, Discussion, DiscussionMessage, Topic, DiscussionTopic
 from ..auth import get_current_session
 
 router = APIRouter(prefix="/database", tags=["database"])
@@ -154,3 +154,137 @@ async def get_rooms_table(
         page_size=page_size,
         total_pages=total_pages
     )
+
+
+@router.get("/discussions")
+async def get_discussions_table(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get raw discussions table data."""
+    total = db.query(func.count(Discussion.id)).scalar() or 0
+    offset = (page - 1) * page_size
+    
+    discussions = db.query(Discussion).order_by(Discussion.id.desc()).offset(offset).limit(page_size).all()
+    
+    rows = []
+    for d in discussions:
+        rows.append({
+            "id": d.id,
+            "analysis_run_id": d.analysis_run_id,
+            "title": d.title,
+            "summary": d.summary[:100] + "..." if d.summary and len(d.summary) > 100 else d.summary,
+            "started_at": d.started_at.isoformat() if d.started_at else None,
+            "ended_at": d.ended_at.isoformat() if d.ended_at else None,
+            "message_count": d.message_count,
+            "participant_count": d.participant_count,
+        })
+    
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
+
+
+@router.get("/discussion_messages")
+async def get_discussion_messages_table(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get raw discussion_messages table data."""
+    total = db.query(func.count(DiscussionMessage.discussion_id)).scalar() or 0
+    offset = (page - 1) * page_size
+    
+    items = db.query(DiscussionMessage).order_by(DiscussionMessage.discussion_id.desc(), DiscussionMessage.message_id.desc()).offset(offset).limit(page_size).all()
+    
+    rows = []
+    for item in items:
+        rows.append({
+            "discussion_id": item.discussion_id,
+            "message_id": item.message_id,
+            "confidence": item.confidence,
+        })
+    
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
+
+
+@router.get("/topics")
+async def get_topics_table(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get raw topics table data."""
+    total = db.query(func.count(Topic.id)).scalar() or 0
+    offset = (page - 1) * page_size
+    
+    topics = db.query(Topic).order_by(Topic.id.desc()).offset(offset).limit(page_size).all()
+    
+    rows = []
+    for t in topics:
+        rows.append({
+            "id": t.id,
+            "name": t.name,
+            "description": t.description,
+            "color": t.color,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        })
+    
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
+
+
+@router.get("/discussion_topics")
+async def get_discussion_topics_table(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get raw discussion_topics table data."""
+    total = db.query(func.count(DiscussionTopic.discussion_id)).scalar() or 0
+    offset = (page - 1) * page_size
+    
+    items = db.query(DiscussionTopic).order_by(DiscussionTopic.discussion_id.desc(), DiscussionTopic.topic_id.desc()).offset(offset).limit(page_size).all()
+    
+    rows = []
+    for item in items:
+        rows.append({
+            "discussion_id": item.discussion_id,
+            "topic_id": item.topic_id,
+        })
+    
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }

@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc
-from typing import Optional
-from datetime import datetime
+from sqlalchemy import func, desc, asc, extract
+from typing import Optional, Literal
+from datetime import datetime, timedelta
 import logging
 
 from ..db import get_db, Person, Message
@@ -277,3 +277,103 @@ async def generate_person_summary(
         ai_summary_generated_at=person.ai_summary_generated_at,
         ai_summary_stale=False  # Just generated, not stale
     )
+
+
+@router.get("/{person_id}/activity")
+async def get_person_activity(
+    person_id: int,
+    period: Literal["all", "year", "6months", "3months", "month"] = "6months",
+    granularity: Literal["day", "week", "month"] = "week",
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get activity stats for a person over time."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    # Calculate date range
+    now = datetime.utcnow()
+    if period == "month":
+        start_date = now - timedelta(days=30)
+    elif period == "3months":
+        start_date = now - timedelta(days=90)
+    elif period == "6months":
+        start_date = now - timedelta(days=180)
+    elif period == "year":
+        start_date = now - timedelta(days=365)
+    else:  # all
+        start_date = None
+    
+    # Build query based on granularity
+    if granularity == "day":
+        date_trunc = func.date(Message.timestamp)
+    elif granularity == "week":
+        date_trunc = func.date_trunc('week', Message.timestamp)
+    else:  # month
+        date_trunc = func.date_trunc('month', Message.timestamp)
+    
+    query = (
+        db.query(
+            date_trunc.label("period"),
+            func.count(Message.id).label("count")
+        )
+        .filter(Message.sender_id == person_id)
+    )
+    
+    if start_date:
+        query = query.filter(Message.timestamp >= start_date)
+    
+    activity_data = (
+        query
+        .group_by(date_trunc)
+        .order_by(date_trunc)
+        .all()
+    )
+    
+    # Get total message count
+    total_messages = db.query(func.count(Message.id)).filter(
+        Message.sender_id == person_id
+    ).scalar() or 0
+    
+    # Get most active day of week (0=Sunday, 6=Saturday)
+    day_of_week_query = (
+        db.query(
+            extract('dow', Message.timestamp).label("dow"),
+            func.count(Message.id).label("count")
+        )
+        .filter(Message.sender_id == person_id)
+        .group_by(extract('dow', Message.timestamp))
+        .order_by(desc(func.count(Message.id)))
+        .first()
+    )
+    
+    day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    most_active_day = day_names[int(day_of_week_query.dow)] if day_of_week_query else None
+    
+    # Get most active hour
+    hour_query = (
+        db.query(
+            extract('hour', Message.timestamp).label("hour"),
+            func.count(Message.id).label("count")
+        )
+        .filter(Message.sender_id == person_id)
+        .group_by(extract('hour', Message.timestamp))
+        .order_by(desc(func.count(Message.id)))
+        .first()
+    )
+    
+    most_active_hour = int(hour_query.hour) if hour_query else None
+    
+    return {
+        "person_id": person_id,
+        "period": period,
+        "granularity": granularity,
+        "data": [
+            {"date": row.period.isoformat() if hasattr(row.period, 'isoformat') else str(row.period), "count": row.count}
+            for row in activity_data
+        ],
+        "total_messages": total_messages,
+        "most_active_day": most_active_day,
+        "most_active_hour": most_active_hour
+    }

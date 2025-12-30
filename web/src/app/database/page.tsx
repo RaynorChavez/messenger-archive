@@ -4,12 +4,16 @@ import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { database, type TableResponse } from "@/lib/api";
 
-type TableName = "messages" | "people" | "rooms";
+type TableName = "messages" | "people" | "rooms" | "discussions" | "discussion_messages" | "topics" | "discussion_topics";
 
 const tableColumns: Record<TableName, string[]> = {
   messages: ["id", "matrix_event_id", "room_id", "sender_id", "content", "reply_to_message_id", "timestamp", "created_at"],
   people: ["id", "matrix_user_id", "display_name", "avatar_url", "notes", "created_at", "updated_at"],
   rooms: ["id", "matrix_room_id", "name", "is_group", "created_at"],
+  discussions: ["id", "analysis_run_id", "title", "summary", "started_at", "ended_at", "message_count", "participant_count"],
+  discussion_messages: ["discussion_id", "message_id", "confidence"],
+  topics: ["id", "name", "description", "color", "created_at"],
+  discussion_topics: ["discussion_id", "topic_id"],
 };
 
 function getColumnsForTable(table: TableName): string[] {
@@ -52,8 +56,8 @@ export default function DatabasePage() {
         </div>
 
         {/* Table selector */}
-        <div className="flex gap-2">
-          {(["messages", "people", "rooms"] as TableName[]).map((table) => (
+        <div className="flex gap-2 flex-wrap">
+          {(["messages", "people", "rooms", "discussions", "discussion_messages", "topics", "discussion_topics"] as TableName[]).map((table) => (
             <button
               key={table}
               onClick={() => setActiveTable(table)}

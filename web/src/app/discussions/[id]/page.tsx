@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
@@ -24,6 +24,7 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
 export default function DiscussionDetailPage() {
   const params = useParams();
   const discussionId = Number(params.id);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [discussion, setDiscussion] = useState<DiscussionFull | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,17 +65,17 @@ export default function DiscussionDetailPage() {
 
   return (
     <AppLayout>
-      <div className="space-y-6">
+      <div className="h-full flex flex-col">
         <Link
           href="/discussions"
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-4"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to Discussions
         </Link>
 
         {/* Discussion header */}
-        <div className="rounded-xl border bg-card p-6">
+        <div className="rounded-xl border bg-card p-6 mb-4 flex-shrink-0">
           <div className="flex items-start gap-4">
             <div className="p-3 rounded-lg bg-primary/10">
               <Sparkles className="h-6 w-6 text-primary" />
@@ -108,44 +109,47 @@ export default function DiscussionDetailPage() {
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="rounded-xl border bg-card">
-          <div className="p-4 border-b">
+        {/* Messages - scrollable chat window */}
+        <div className="rounded-xl border bg-card flex-1 flex flex-col min-h-0">
+          <div className="p-4 border-b flex-shrink-0">
             <h2 className="font-semibold">Messages in this discussion</h2>
             <p className="text-sm text-muted-foreground mt-1">
               Confidence score indicates how relevant each message is to this discussion
             </p>
           </div>
-          <div className="divide-y">
+          
+          {/* Scrollable messages container */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {discussion.messages.map((msg) => (
-              <div key={msg.id} className="p-4 hover:bg-muted/30 transition-colors">
-                <div className="flex items-start gap-3">
-                  {msg.sender?.avatar_url && mxcToHttp(msg.sender.avatar_url) ? (
-                    <img
-                      src={mxcToHttp(msg.sender.avatar_url)!}
-                      alt={msg.sender.display_name || "Avatar"}
-                      className="h-8 w-8 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-sm font-medium">
-                      {msg.sender?.display_name?.[0] || "?"}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm">
-                        {msg.sender?.display_name || "Unknown"}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {formatRelativeTime(msg.timestamp)}
-                      </span>
-                      <ConfidenceBadge confidence={msg.confidence} />
-                    </div>
-                    <p className="mt-1 text-sm">{msg.content}</p>
+              <div key={msg.id} className="flex items-start gap-3 group">
+                {msg.sender?.avatar_url && mxcToHttp(msg.sender.avatar_url) ? (
+                  <img
+                    src={mxcToHttp(msg.sender.avatar_url)!}
+                    alt={msg.sender.display_name || "Avatar"}
+                    className="h-10 w-10 rounded-full object-cover flex-shrink-0"
+                  />
+                ) : (
+                  <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-sm font-medium flex-shrink-0">
+                    {msg.sender?.display_name?.[0] || "?"}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm">
+                      {msg.sender?.display_name || "Unknown"}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(msg.timestamp).toLocaleString()}
+                    </span>
+                    <ConfidenceBadge confidence={msg.confidence} />
+                  </div>
+                  <div className="mt-1 p-3 rounded-lg bg-muted/50 inline-block max-w-[85%]">
+                    <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
                   </div>
                 </div>
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
         </div>
       </div>

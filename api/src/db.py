@@ -100,6 +100,7 @@ class Discussion(Base):
     
     analysis_run = relationship("DiscussionAnalysisRun", back_populates="discussions")
     message_links = relationship("DiscussionMessage", back_populates="discussion", cascade="all, delete-orphan")
+    topics = relationship("Topic", secondary="discussion_topics", back_populates="discussions")
 
 
 class DiscussionMessage(Base):
@@ -111,6 +112,37 @@ class DiscussionMessage(Base):
     
     discussion = relationship("Discussion", back_populates="message_links")
     message = relationship("Message", back_populates="discussion_links")
+
+
+class Topic(Base):
+    __tablename__ = "topics"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    color = Column(String(7), nullable=False)  # Hex color e.g. #6366f1
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    discussions = relationship("Discussion", secondary="discussion_topics", back_populates="topics")
+
+
+class DiscussionTopic(Base):
+    __tablename__ = "discussion_topics"
+    
+    discussion_id = Column(Integer, ForeignKey("discussions.id", ondelete="CASCADE"), primary_key=True)
+    topic_id = Column(Integer, ForeignKey("topics.id", ondelete="CASCADE"), primary_key=True)
+
+
+class TopicClassificationRun(Base):
+    __tablename__ = "topic_classification_runs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(20), default="running")  # running, completed, failed
+    topics_created = Column(Integer, default=0)
+    discussions_classified = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
 
 
 # =============================================================================

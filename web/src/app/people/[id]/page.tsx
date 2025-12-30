@@ -4,9 +4,17 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { people, type PersonFull, type Message, mxcToHttp } from "@/lib/api";
+import { people, type PersonFull, type Message, type PersonActivityResponse, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle } from "lucide-react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 
 export default function PersonDetailPage() {
   const params = useParams();
@@ -19,17 +27,24 @@ export default function PersonDetailPage() {
   const [notes, setNotes] = useState("");
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  
+  // Activity chart state
+  const [activity, setActivity] = useState<PersonActivityResponse | null>(null);
+  const [activityPeriod, setActivityPeriod] = useState<"month" | "3months" | "6months" | "year" | "all">("6months");
+  const [activityGranularity, setActivityGranularity] = useState<"day" | "week" | "month">("week");
 
   useEffect(() => {
     async function load() {
       try {
-        const [personData, messagesData] = await Promise.all([
+        const [personData, messagesData, activityData] = await Promise.all([
           people.get(personId),
           people.messages(personId),
+          people.activity(personId, activityPeriod, activityGranularity),
         ]);
         setPerson(personData);
         setNotes(personData.notes || "");
         setMessages(messagesData.messages);
+        setActivity(activityData);
       } catch (error) {
         console.error("Failed to load person:", error);
       } finally {
@@ -37,7 +52,7 @@ export default function PersonDetailPage() {
       }
     }
     load();
-  }, [personId]);
+  }, [personId, activityPeriod, activityGranularity]);
 
   const handleSaveNotes = async () => {
     try {
@@ -226,6 +241,73 @@ export default function PersonDetailPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Activity Chart */}
+        <div className="rounded-xl border bg-card p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Activity</h2>
+            <div className="flex items-center gap-2">
+              <select
+                value={activityPeriod}
+                onChange={(e) => setActivityPeriod(e.target.value as typeof activityPeriod)}
+                className="text-sm bg-muted border-0 rounded px-2 py-1"
+              >
+                <option value="month">Last month</option>
+                <option value="3months">Last 3 months</option>
+                <option value="6months">Last 6 months</option>
+                <option value="year">Last year</option>
+                <option value="all">All time</option>
+              </select>
+              <select
+                value={activityGranularity}
+                onChange={(e) => setActivityGranularity(e.target.value as typeof activityGranularity)}
+                className="text-sm bg-muted border-0 rounded px-2 py-1"
+              >
+                <option value="day">Daily</option>
+                <option value="week">Weekly</option>
+                <option value="month">Monthly</option>
+              </select>
+            </div>
+          </div>
+          
+          {activity && activity.data.length > 0 ? (
+            <>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={activity.data}>
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 10 }}
+                    tickFormatter={(value) =>
+                      new Date(value).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      })
+                    }
+                  />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    labelFormatter={(value) => new Date(value).toLocaleDateString()}
+                    formatter={(value: number) => [`${value} messages`, "Count"]}
+                  />
+                  <Bar dataKey="count" fill="hsl(var(--primary))" radius={2} />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="flex items-center justify-center gap-6 mt-4 text-sm text-muted-foreground">
+                {activity.most_active_day && (
+                  <span>Most active: <strong>{activity.most_active_day}</strong></span>
+                )}
+                {activity.most_active_hour !== null && (
+                  <span>Peak hour: <strong>{activity.most_active_hour}:00</strong></span>
+                )}
+                <span>Total: <strong>{activity.total_messages.toLocaleString()}</strong> messages</span>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center justify-center h-[200px]">
+              <p className="text-sm text-muted-foreground">No activity data</p>
+            </div>
+          )}
         </div>
 
         {/* Recent messages */}

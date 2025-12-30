@@ -122,8 +122,23 @@ export interface GenerateSummaryError {
   retry_after?: number;
 }
 
+export interface PersonActivityDataPoint {
+  date: string;
+  count: number;
+}
+
+export interface PersonActivityResponse {
+  person_id: number;
+  period: string;
+  granularity: string;
+  data: PersonActivityDataPoint[];
+  total_messages: number;
+  most_active_day: string | null;
+  most_active_hour: number | null;
+}
+
 // Convert mxc:// URL to HTTP URL
-export function mxcToHttp(mxcUrl: string | null): string | null {
+export function mxcToHttp(mxcUrl: string | null | undefined): string | null {
   if (!mxcUrl || !mxcUrl.startsWith("mxc://")) return null;
   const parts = mxcUrl.replace("mxc://", "").split("/");
   if (parts.length < 2) return null;
@@ -178,6 +193,15 @@ export const people = {
 
     return response.json();
   },
+
+  activity: (
+    id: number,
+    period: "all" | "year" | "6months" | "3months" | "month" = "6months",
+    granularity: "day" | "week" | "month" = "week"
+  ) =>
+    fetchAPI<PersonActivityResponse>(`/people/${id}/activity`, {
+      params: { period, granularity },
+    }),
 };
 
 // Threads
@@ -270,6 +294,18 @@ export const database = {
 
   rooms: (page?: number, page_size?: number) =>
     fetchAPI<TableResponse>("/database/rooms", { params: { page, page_size } }),
+
+  discussions: (page?: number, page_size?: number) =>
+    fetchAPI<TableResponse>("/database/discussions", { params: { page, page_size } }),
+
+  discussion_messages: (page?: number, page_size?: number) =>
+    fetchAPI<TableResponse>("/database/discussion_messages", { params: { page, page_size } }),
+
+  topics: (page?: number, page_size?: number) =>
+    fetchAPI<TableResponse>("/database/topics", { params: { page, page_size } }),
+
+  discussion_topics: (page?: number, page_size?: number) =>
+    fetchAPI<TableResponse>("/database/discussion_topics", { params: { page, page_size } }),
 };
 
 // Discussions (AI-detected)
@@ -281,6 +317,14 @@ export interface DiscussionMessage {
   confidence: number;
 }
 
+export interface TopicBrief {
+  id: number;
+  name: string;
+  description: string | null;
+  color: string;
+  discussion_count: number;
+}
+
 export interface DiscussionBrief {
   id: number;
   title: string;
@@ -289,6 +333,7 @@ export interface DiscussionBrief {
   ended_at: string;
   message_count: number;
   participant_count: number;
+  topics?: TopicBrief[];
 }
 
 export interface DiscussionFull extends DiscussionBrief {
@@ -304,7 +349,7 @@ export interface DiscussionListResponse {
 }
 
 export interface AnalysisStatus {
-  status: "none" | "running" | "completed" | "failed";
+  status: "none" | "running" | "completed" | "failed" | "stale";
   started_at: string | null;
   completed_at: string | null;
   windows_processed: number;
@@ -319,8 +364,26 @@ export interface AnalyzeResponse {
   run_id: number;
 }
 
+export interface TopicListResponse {
+  topics: TopicBrief[];
+}
+
+export interface TopicClassificationStatus {
+  status: "none" | "running" | "completed" | "failed";
+  started_at: string | null;
+  completed_at: string | null;
+  topics_created: number;
+  discussions_classified: number;
+  error_message: string | null;
+}
+
+export interface ClassifyTopicsResponse {
+  message: string;
+  run_id: number;
+}
+
 export const discussions = {
-  list: (params?: { page?: number; page_size?: number }) =>
+  list: (params?: { page?: number; page_size?: number; topic_id?: number }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),
 
   get: (id: number) => fetchAPI<DiscussionFull>(`/discussions/${id}`),
@@ -331,4 +394,15 @@ export const discussions = {
     }),
 
   analysisStatus: () => fetchAPI<AnalysisStatus>("/discussions/analysis-status"),
+
+  // Topics
+  listTopics: () => fetchAPI<TopicListResponse>("/discussions/topics/list"),
+
+  classifyTopics: () =>
+    fetchAPI<ClassifyTopicsResponse>("/discussions/classify-topics", {
+      method: "POST",
+    }),
+
+  topicClassificationStatus: () =>
+    fetchAPI<TopicClassificationStatus>("/discussions/classify-topics/status"),
 };

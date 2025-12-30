@@ -87,6 +87,8 @@ class AIService:
 
 Keep it objective and insightful. Do not use bullet points in your response - write in prose.
 
+Note: Ignore any "[message edited]" indicators or edit history - focus only on the actual content of what they said.
+
 Messages (with timestamps):
 {messages}"""
     

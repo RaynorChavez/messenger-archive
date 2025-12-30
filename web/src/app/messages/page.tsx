@@ -2,9 +2,32 @@
 
 import { useEffect, useState, useRef } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { messages, type Message, type MessageListResponse } from "@/lib/api";
+import { messages, type Message, type MessageListResponse, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { CornerDownRight } from "lucide-react";
+
+function Avatar({ url, name }: { url: string | null | undefined; name: string | null | undefined }) {
+  const avatarUrl = mxcToHttp(url);
+  const initial = name?.[0] || "?";
+  
+  return (
+    <div className="relative h-10 w-10 shrink-0">
+      {avatarUrl && (
+        <img
+          src={avatarUrl}
+          alt={name || ""}
+          className="h-10 w-10 rounded-full object-cover bg-muted absolute inset-0"
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+          }}
+        />
+      )}
+      <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-sm font-medium">
+        {initial}
+      </div>
+    </div>
+  );
+}
 
 export default function MessagesPage() {
   const [data, setData] = useState<MessageListResponse | null>(null);
@@ -54,9 +77,7 @@ export default function MessagesPage() {
           <div className="p-4 space-y-3">
             {data?.messages.map((msg) => (
               <div key={msg.id} className="flex items-start gap-3">
-                <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-sm font-medium shrink-0">
-                  {msg.sender?.display_name?.[0] || "?"}
-                </div>
+                <Avatar url={msg.sender?.avatar_url} name={msg.sender?.display_name} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">

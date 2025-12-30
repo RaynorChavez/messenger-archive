@@ -12,7 +12,7 @@ and fb_profile_url.
 import asyncio
 import logging
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from nio import AsyncClient, MatrixRoom, RoomMessageText, Event
@@ -260,8 +260,8 @@ class ArchiveClient:
                 if relates_to.get('m.in_reply_to'):
                     reply_to_event_id = relates_to['m.in_reply_to'].get('event_id')
             
-            # Store message
-            timestamp = datetime.fromtimestamp(event.server_timestamp / 1000)
+            # Store message (use UTC to be consistent)
+            timestamp = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
             await store_message(
                 self.db,
                 event.event_id,

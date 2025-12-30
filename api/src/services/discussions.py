@@ -295,9 +295,10 @@ OUTPUT STRICT JSON (no markdown, no extra text):
     def _create_discussion_in_db(self, temp_id: str, title: str, started_at: Optional[datetime] = None, ended_at: Optional[datetime] = None) -> int:
         """Create a discussion in the database and return its ID."""
         from ..db import Discussion
+        from datetime import timezone
         
-        # Use current time as default if not provided
-        now = datetime.utcnow()
+        # Use current time as default if not provided (timezone-aware)
+        now = datetime.now(timezone.utc)
         started_at = started_at or now
         ended_at = ended_at or now
         
@@ -540,3 +541,188 @@ Write a concise summary (2-3 sentences) capturing the main topics, arguments, an
             logger.error(f"Failed to generate summary for discussion {discussion_id}: {e}")
         
         return ""
+    
+    # =============================================================================
+    # Topic Classification
+    # =============================================================================
+    
+    TOPIC_COLORS = [
+        '#6366f1',  # Indigo
+        '#f43f5e',  # Rose
+        '#f59e0b',  # Amber
+        '#10b981',  # Emerald
+        '#0ea5e9',  # Sky
+        '#8b5cf6',  # Violet
+        '#14b8a6',  # Teal
+        '#f97316',  # Orange
+        '#ec4899',  # Pink
+        '#06b6d4',  # Cyan
+    ]
+    
+    TOPIC_CLASSIFICATION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "topics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"}
+                    },
+                    "required": ["name", "description"]
+                }
+            },
+            "assignments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "discussion_id": {"type": "integer"},
+                        "topic_names": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    },
+                    "required": ["discussion_id", "topic_names"]
+                }
+            }
+        },
+        "required": ["topics", "assignments"]
+    }
+    
+    TOPIC_CLASSIFICATION_PROMPT = '''You are classifying discussions from "Manila Dialectics Society", a Filipino philosophy discussion group. They discuss philosophy, politics, culture, history, and intellectual discourse.
+
+EXISTING TOPICS (reuse if appropriate, modify descriptions, or create new ones):
+{existing_topics}
+
+DISCUSSIONS TO CLASSIFY:
+{discussions}
+
+Create 5-10 topic categories that best organize this content. Each discussion should belong to 1-3 topics.
+
+Guidelines:
+- Reuse existing topic names when they fit
+- Create new topics for themes not covered
+- Topics should be broad enough to group multiple discussions
+- Each topic needs a concise description (1 sentence)
+
+Output JSON with topics and assignments.'''
+
+    async def classify_topics(
+        self,
+        update_progress_callback=None
+    ) -> Dict[str, Any]:
+        """Classify all discussions into topics using AI."""
+        from ..db import Discussion, Topic, DiscussionTopic
+        from ..schemas.discussion import TopicClassificationAIResponse
+        
+        # Fetch all discussions
+        discussions = self.db.query(Discussion).all()
+        
+        if not discussions:
+            return {
+                "topics_created": 0,
+                "discussions_classified": 0
+            }
+        
+        # Format discussions for prompt
+        discussions_data = []
+        for d in discussions:
+            discussions_data.append({
+                "id": d.id,
+                "title": d.title,
+                "summary": d.summary or ""
+            })
+        
+        # Fetch existing topics
+        existing_topics = self.db.query(Topic).all()
+        existing_topics_data = [{"name": t.name, "description": t.description or ""} for t in existing_topics]
+        
+        # Build prompt
+        prompt = self.TOPIC_CLASSIFICATION_PROMPT.format(
+            existing_topics=json.dumps(existing_topics_data, indent=2) if existing_topics_data else "None yet.",
+            discussions=json.dumps(discussions_data, indent=2)
+        )
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=self.TOPIC_CLASSIFICATION_SCHEMA,
+                    temperature=1.0,
+                    max_output_tokens=4096,
+                    thinking_config=types.ThinkingConfig(thinking_budget=self.THINKING_BUDGET),
+                )
+            )
+            
+            if not response.text:
+                raise ValueError("Empty response from AI")
+            
+            data = json.loads(response.text)
+            ai_response = TopicClassificationAIResponse(**data)
+            
+            # Clear existing discussion-topic links
+            self.db.query(DiscussionTopic).delete()
+            self.db.commit()
+            
+            # Create/update topics
+            topic_name_to_id = {}
+            existing_topic_names = {t.name.lower(): t for t in existing_topics}
+            color_index = len(existing_topics) % len(self.TOPIC_COLORS)
+            
+            for topic_def in ai_response.topics:
+                existing = existing_topic_names.get(topic_def.name.lower())
+                if existing:
+                    # Update description if changed
+                    existing.description = topic_def.description
+                    topic_name_to_id[topic_def.name] = existing.id
+                else:
+                    # Create new topic
+                    new_topic = Topic(
+                        name=topic_def.name,
+                        description=topic_def.description,
+                        color=self.TOPIC_COLORS[color_index % len(self.TOPIC_COLORS)]
+                    )
+                    self.db.add(new_topic)
+                    self.db.flush()
+                    topic_name_to_id[topic_def.name] = new_topic.id
+                    color_index += 1
+            
+            self.db.commit()
+            
+            # Create assignments
+            discussions_classified = 0
+            for assignment in ai_response.assignments:
+                for topic_name in assignment.topic_names:
+                    topic_id = topic_name_to_id.get(topic_name)
+                    if topic_id:
+                        link = DiscussionTopic(
+                            discussion_id=assignment.discussion_id,
+                            topic_id=topic_id
+                        )
+                        self.db.add(link)
+                discussions_classified += 1
+            
+            self.db.commit()
+            
+            # Delete orphaned topics (topics with no discussions)
+            orphaned = self.db.query(Topic).filter(
+                ~Topic.id.in_(
+                    self.db.query(DiscussionTopic.topic_id).distinct()
+                )
+            ).all()
+            for topic in orphaned:
+                self.db.delete(topic)
+            self.db.commit()
+            
+            return {
+                "topics_created": len(ai_response.topics),
+                "discussions_classified": discussions_classified
+            }
+            
+        except Exception as e:
+            logger.error(f"Topic classification failed: {e}")
+            raise

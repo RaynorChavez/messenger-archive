@@ -271,8 +271,9 @@ def import_messages(db, messages: list, room_id: int, people_lookup: dict, exist
             ])
             # Don't append to content, could add reactions table later
         
-        # Insert message
-        timestamp = datetime.fromtimestamp(timestamp_ms / 1000)
+        # Insert message (FB timestamps are UTC milliseconds)
+        from datetime import timezone
+        timestamp = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
         
         db.execute(
             text("""

@@ -117,3 +117,65 @@ class AnalyzeResponse(BaseModel):
     """Response when starting a new analysis."""
     message: str
     run_id: int
+
+
+# =============================================================================
+# Topic Schemas
+# =============================================================================
+
+class TopicBrief(BaseModel):
+    """Brief topic info for list views."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    color: str
+    discussion_count: int = 0
+    
+    class Config:
+        from_attributes = True
+
+
+class TopicListResponse(BaseModel):
+    """Response for listing topics."""
+    topics: List[TopicBrief]
+
+
+class TopicClassificationStatusResponse(BaseModel):
+    """Status of topic classification run."""
+    status: str  # none, running, completed, failed
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    topics_created: int = 0
+    discussions_classified: int = 0
+    error_message: Optional[str] = None
+
+
+class ClassifyTopicsResponse(BaseModel):
+    """Response when starting topic classification."""
+    message: str
+    run_id: int
+
+
+# AI Response schema for topic classification
+class TopicDefinition(BaseModel):
+    """A topic definition from AI."""
+    name: str
+    description: str
+
+
+class TopicAssignment(BaseModel):
+    """Assignment of a discussion to topics."""
+    discussion_id: int
+    topic_names: List[str]
+
+
+class TopicClassificationAIResponse(BaseModel):
+    """Complete response from AI for topic classification."""
+    topics: List[TopicDefinition]
+    assignments: List[TopicAssignment]
+
+
+# Updated DiscussionBrief to include topics
+class DiscussionBriefWithTopics(DiscussionBrief):
+    """Discussion brief with topic info."""
+    topics: List[TopicBrief] = []

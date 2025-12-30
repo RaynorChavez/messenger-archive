@@ -7,9 +7,7 @@ import {
   MessageSquare,
   GitBranch,
   Users,
-  Tag,
   Settings,
-  Search,
   Database,
   Sparkles,
 } from "lucide-react";
@@ -21,7 +19,6 @@ const navigation = [
   { name: "Threads", href: "/threads", icon: GitBranch },
   { name: "Discussions", href: "/discussions", icon: Sparkles },
   { name: "People", href: "/people", icon: Users },
-  { name: "Topics", href: "/topics", icon: Tag },
   { name: "Database", href: "/database", icon: Database },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
