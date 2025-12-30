@@ -382,11 +382,24 @@ export interface ClassifyTopicsResponse {
   run_id: number;
 }
 
+export interface TimelineEntry {
+  date: string;
+  count: number;
+}
+
+export interface TimelineResponse {
+  timeline: TimelineEntry[];
+  total: number;
+}
+
 export const discussions = {
   list: (params?: { page?: number; page_size?: number; topic_id?: number }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),
 
   get: (id: number) => fetchAPI<DiscussionFull>(`/discussions/${id}`),
+
+  timeline: (params?: { topic_id?: number }) =>
+    fetchAPI<TimelineResponse>("/discussions/timeline", { params }),
 
   analyze: () =>
     fetchAPI<AnalyzeResponse>("/discussions/analyze", {

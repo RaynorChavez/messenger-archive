@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppLayout } from "@/components/layout/app-layout";
 import {
   discussions,
@@ -9,6 +10,7 @@ import {
   type AnalysisStatus,
   type TopicBrief,
   type TopicClassificationStatus,
+  type TimelineEntry,
 } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag } from "lucide-react";
@@ -63,6 +65,9 @@ export default function DiscussionsPage() {
   const [data, setData] = useState<DiscussionBrief[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus | null>(null);
   const [startingAnalysis, setStartingAnalysis] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,16 +78,32 @@ export default function DiscussionsPage() {
   const [selectedTopicId, setSelectedTopicId] = useState<number | null>(null);
   const [topicClassificationStatus, setTopicClassificationStatus] = useState<TopicClassificationStatus | null>(null);
   const [startingClassification, setStartingClassification] = useState(false);
+  
+  // Timeline state (fetched separately for full view)
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
-  const loadDiscussions = useCallback(async (topicId?: number | null) => {
+  // Virtualization
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const loadDiscussions = useCallback(async (topicId?: number | null, page: number = 1, append: boolean = false) => {
     try {
-      const params: { topic_id?: number } = {};
+      const params: { topic_id?: number; page?: number; page_size?: number } = {
+        page,
+        page_size: 50,
+      };
       if (topicId !== null && topicId !== undefined) {
         params.topic_id = topicId;
       }
       const result = await discussions.list(params);
-      setData(result.discussions);
+      
+      if (append) {
+        setData(prev => [...prev, ...result.discussions]);
+      } else {
+        setData(result.discussions);
+      }
       setTotal(result.total);
+      setCurrentPage(page);
+      setHasMore(page < result.total_pages);
     } catch (err) {
       console.error("Failed to load discussions:", err);
     }
@@ -119,20 +140,41 @@ export default function DiscussionsPage() {
     }
   }, []);
 
+  const loadTimeline = useCallback(async (topicId?: number | null) => {
+    try {
+      const params: { topic_id?: number } = {};
+      if (topicId !== null && topicId !== undefined) {
+        params.topic_id = topicId;
+      }
+      const result = await discussions.timeline(params);
+      setTimeline(result.timeline);
+      setTotal(result.total);
+    } catch (err) {
+      console.error("Failed to load timeline:", err);
+    }
+  }, []);
+
   useEffect(() => {
     async function load() {
-      await Promise.all([loadDiscussions(), loadStatus(), loadTopics(), loadTopicClassificationStatus()]);
+      await Promise.all([
+        loadDiscussions(),
+        loadTimeline(),
+        loadStatus(),
+        loadTopics(),
+        loadTopicClassificationStatus()
+      ]);
       setLoading(false);
     }
     load();
-  }, [loadDiscussions, loadStatus, loadTopics, loadTopicClassificationStatus]);
+  }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus]);
 
-  // Reload discussions when topic filter changes
+  // Reload discussions and timeline when topic filter changes
   useEffect(() => {
     if (!loading) {
       loadDiscussions(selectedTopicId);
+      loadTimeline(selectedTopicId);
     }
-  }, [selectedTopicId, loadDiscussions, loading]);
+  }, [selectedTopicId, loadDiscussions, loadTimeline, loading]);
 
   // Poll for status and discussions while analysis is running
   useEffect(() => {
@@ -142,11 +184,12 @@ export default function DiscussionsPage() {
       await Promise.all([
         loadStatus(),
         loadDiscussions(selectedTopicId),
+        loadTimeline(selectedTopicId),
       ]);
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [analysisStatus?.status, loadStatus, loadDiscussions, selectedTopicId]);
+  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId]);
 
   // Poll for topic classification status
   useEffect(() => {
@@ -155,41 +198,17 @@ export default function DiscussionsPage() {
     const interval = setInterval(async () => {
       const status = await loadTopicClassificationStatus();
       if (status?.status === "completed") {
-        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId)]);
+        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId), loadTimeline(selectedTopicId)]);
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, selectedTopicId]);
+  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId]);
 
-  // Group discussions by date and create timeline
-  const { timeline, filteredDiscussions } = useMemo(() => {
-    const dateMap = new Map<string, { date: Date; count: number }>();
-    
-    data.forEach((d) => {
-      const date = new Date(d.started_at);
-      const dateKey = date.toISOString().split("T")[0];
-      const existing = dateMap.get(dateKey);
-      if (existing) {
-        existing.count++;
-      } else {
-        dateMap.set(dateKey, { date, count: 1 });
-      }
-    });
-
-    const timeline = Array.from(dateMap.entries())
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([key, value]) => ({
-        dateKey: key,
-        date: value.date,
-        count: value.count,
-      }));
-
-    const filtered = selectedDate
-      ? data.filter((d) => d.started_at.startsWith(selectedDate))
-      : data;
-
-    return { timeline, filteredDiscussions: filtered };
+  // Filter discussions by selected date
+  const filteredDiscussions = useMemo(() => {
+    if (!selectedDate) return data;
+    return data.filter((d) => d.started_at.startsWith(selectedDate));
   }, [data, selectedDate]);
 
   const handleStartAnalysis = async () => {
@@ -219,6 +238,37 @@ export default function DiscussionsPage() {
       setStartingClassification(false);
     }
   };
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      await loadDiscussions(selectedTopicId, currentPage + 1, true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, loadDiscussions, selectedTopicId, currentPage]);
+
+  // Virtualizer for discussions list
+  const rowVirtualizer = useVirtualizer({
+    count: filteredDiscussions.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 120, // Estimated height of each discussion card
+    overscan: 5,
+  });
+
+  // Load more when scrolling near the bottom
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const lastItem = virtualItems[virtualItems.length - 1];
+  
+  useEffect(() => {
+    if (!lastItem) return;
+    
+    // If we're within 5 items of the end and have more data, load more
+    if (lastItem.index >= filteredDiscussions.length - 5 && hasMore && !loadingMore && !selectedDate) {
+      loadMore();
+    }
+  }, [lastItem?.index, filteredDiscussions.length, hasMore, loadingMore, loadMore, selectedDate]);
 
   if (loading) {
     return (
@@ -388,92 +438,128 @@ export default function DiscussionsPage() {
                       }`}
                     />
                     <span className="text-sm font-medium">All dates</span>
-                    <span className="text-xs text-muted-foreground ml-auto">{data.length}</span>
+                    <span className="text-xs text-muted-foreground ml-auto">{total}</span>
                   </button>
 
-                  {timeline.map(({ dateKey, date, count }) => (
-                    <button
-                      key={dateKey}
-                      onClick={() => setSelectedDate(dateKey)}
-                      className={`relative flex items-center gap-3 w-full text-left py-2 group ${
-                        selectedDate === dateKey ? "text-primary" : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {/* Bead */}
-                      <div
-                        className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
-                          selectedDate === dateKey
-                            ? "bg-primary border-primary"
-                            : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
+                  {timeline.map(({ date, count }) => {
+                    const dateObj = new Date(date + "T00:00:00");
+                    return (
+                      <button
+                        key={date}
+                        onClick={() => setSelectedDate(date)}
+                        className={`relative flex items-center gap-3 w-full text-left py-2 group ${
+                          selectedDate === date ? "text-primary" : "text-muted-foreground hover:text-foreground"
                         }`}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm">
-                          {date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        </span>
-                        <span className="text-xs text-muted-foreground ml-2">{count}</span>
-                      </div>
-                    </button>
-                  ))}
+                      >
+                        {/* Bead */}
+                        <div
+                          className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
+                            selectedDate === date
+                              ? "bg-primary border-primary"
+                              : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
+                          }`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm">
+                            {dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </span>
+                          <span className="text-xs text-muted-foreground ml-2">{count}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Discussions list */}
-          <div className="flex-1 space-y-4">
-            {filteredDiscussions.map((discussion) => (
-              <Link
-                key={discussion.id}
-                href={`/discussions/${discussion.id}`}
-                className="block rounded-xl border bg-card p-4 hover:bg-muted/50 transition-colors"
+          {/* Discussions list - virtualized */}
+          <div 
+            ref={parentRef}
+            className="flex-1 overflow-auto"
+            style={{ height: "calc(100vh - 300px)" }}
+          >
+            {filteredDiscussions.length > 0 ? (
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: "100%",
+                  position: "relative",
+                }}
               >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-medium">{discussion.title}</h3>
-                    <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <MessageSquare className="h-3.5 w-3.5" />
-                        {discussion.message_count} messages
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Users className="h-3.5 w-3.5" />
-                        {discussion.participant_count} participants
-                      </span>
-                      <span>
-                        {formatRelativeTime(discussion.started_at)}
-                      </span>
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const discussion = filteredDiscussions[virtualRow.index];
+                  return (
+                    <div
+                      key={discussion.id}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <Link
+                        href={`/discussions/${discussion.id}`}
+                        className="block rounded-xl border bg-card p-4 hover:bg-muted/50 transition-colors mb-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-medium">{discussion.title}</h3>
+                            <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
+                              <span className="flex items-center gap-1">
+                                <MessageSquare className="h-3.5 w-3.5" />
+                                {discussion.message_count} messages
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <Users className="h-3.5 w-3.5" />
+                                {discussion.participant_count} participants
+                              </span>
+                              <span>
+                                {formatRelativeTime(discussion.started_at)}
+                              </span>
+                            </div>
+                            <DiscussionTopicPills topics={discussion.topics} />
+                            {discussion.summary && (
+                              <p className="mt-2 text-sm text-muted-foreground">
+                                {truncate(discussion.summary, 200)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </Link>
                     </div>
-                    <DiscussionTopicPills topics={discussion.topics} />
-                    {discussion.summary && (
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        {truncate(discussion.summary, 200)}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </Link>
-            ))}
-
-            {filteredDiscussions.length === 0 && !isRunning && (
-              <div className="text-center py-12">
-                <Sparkles className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
-                <p className="text-muted-foreground">
-                  {selectedDate || selectedTopicId ? "No discussions match the filters" : "No discussions detected yet"}
-                </p>
-                {!selectedDate && !selectedTopicId && (
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Click "Analyze" to detect thematic discussions in your chat history
+                  );
+                })}
+              </div>
+            ) : (
+              !isRunning && (
+                <div className="text-center py-12">
+                  <Sparkles className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
+                  <p className="text-muted-foreground">
+                    {selectedDate || selectedTopicId ? "No discussions match the filters" : "No discussions detected yet"}
                   </p>
-                )}
+                  {!selectedDate && !selectedTopicId && (
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Click "Analyze" to detect thematic discussions in your chat history
+                    </p>
+                  )}
+                </div>
+              )
+            )}
+            
+            {loadingMore && (
+              <div className="flex justify-center py-4">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
             )}
           </div>
         </div>
 
-        {total > data.length && (
+        {total > data.length && !loadingMore && (
           <p className="text-sm text-muted-foreground text-center">
-            Showing {data.length} of {total} discussions
+            Loaded {data.length} of {total} discussions
           </p>
         )}
       </div>

@@ -36,6 +36,11 @@ class ActiveDiscussion:
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     ended: bool = False
+    # New fields for dormancy and topic tracking
+    last_active_window: int = 0  # Track which window last had activity
+    dormant: bool = False  # Soft-ended, can be revived
+    topic_keywords: List[str] = field(default_factory=list)  # Keywords for topic matching
+    recent_participants: List[str] = field(default_factory=list)  # Recent senders
 
 
 @dataclass
@@ -45,6 +50,7 @@ class AnalysisState:
     temp_id_to_db_id: Dict[str, int] = field(default_factory=dict)  # Maps AI temp IDs to DB IDs
     total_tokens_used: int = 0
     windows_processed: int = 0
+    current_window: int = 0  # Track current window number
 
 
 class DiscussionAnalyzer:
@@ -65,9 +71,13 @@ MESSAGES TO CLASSIFY:
 {messages}
 
 RULES:
-- Assign each message to discussion(s) it belongs to, or empty assignments for noise/greetings
-- Use "NEW" as discussion_id to create new discussions (include title)
-- Confidence: 0.0-1.0 based on relevance
+- Only assign a message to a discussion if it is ACTUALLY ABOUT that topic - topic relevance is required
+- Do NOT assign messages to a discussion just because it is active - check the topic_keywords
+- If a message doesn't fit any active discussion, either create a NEW one or leave assignments empty for noise/greetings
+- Confidence: LOW (0.3-0.5) for tangentially related, HIGH (0.8-1.0) only for directly on-topic messages
+- Use "NEW" as discussion_id to create new discussions (include a descriptive title)
+- A discussion can span multiple days - don't end it just because of time gaps
+- End a discussion only when the topic has clearly concluded or shifted permanently
 - Mark ended discussions in discussions_ended array
 
 OUTPUT STRICT JSON (no markdown, no extra text):
@@ -161,18 +171,25 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         return json.dumps(formatted, indent=2)
     
     def _format_active_discussions(self) -> str:
-        """Format active discussions for the prompt."""
+        """Format active discussions for the prompt, excluding dormant ones."""
         if not self.state.active_discussions:
             return "None yet - this is the first window."
         
         discussions = []
         for disc_id, disc in self.state.active_discussions.items():
-            if not disc.ended:
-                discussions.append({
-                    "id": disc_id,
-                    "title": disc.title,
-                    "message_count": len(disc.message_ids)
-                })
+            # Skip ended or dormant discussions
+            if disc.ended or disc.dormant:
+                continue
+            
+            windows_since_active = self.state.current_window - disc.last_active_window
+            discussions.append({
+                "id": disc_id,
+                "title": disc.title,
+                "topic_keywords": disc.topic_keywords[:5] if disc.topic_keywords else [],
+                "recent_participants": disc.recent_participants[:3] if disc.recent_participants else [],
+                "message_count": len(disc.message_ids),
+                "windows_since_active": windows_since_active
+            })
         
         if not discussions:
             return "None currently active."
@@ -292,7 +309,32 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         
         return None
     
-    def _create_discussion_in_db(self, temp_id: str, title: str, started_at: Optional[datetime] = None, ended_at: Optional[datetime] = None) -> int:
+    def _generate_topic_keywords(self, title: str, first_message_content: str = "") -> List[str]:
+        """Generate topic keywords for a discussion based on title and first message."""
+        # Simple keyword extraction from title - no AI call to keep it fast
+        # Split title into words, filter out common words
+        common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'about', 'from', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'under', 'over', 'out', 'up', 'down', 'off', 'then', 'than', 'so', 'as', 'if', 'when', 'where', 'why', 'how', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'its'}
+        
+        words = title.lower().replace("'", "").replace('"', '').split()
+        keywords = [w.strip('.,!?()[]{}:;') for w in words if w.lower() not in common_words and len(w) > 2]
+        
+        # Also extract from first message content if available
+        if first_message_content:
+            content_words = first_message_content.lower().replace("'", "").replace('"', '').split()[:20]
+            content_keywords = [w.strip('.,!?()[]{}:;') for w in content_words if w.lower() not in common_words and len(w) > 3]
+            keywords.extend(content_keywords[:3])
+        
+        # Dedupe and limit
+        seen = set()
+        unique_keywords = []
+        for kw in keywords:
+            if kw not in seen:
+                seen.add(kw)
+                unique_keywords.append(kw)
+        
+        return unique_keywords[:7]
+    
+    def _create_discussion_in_db(self, temp_id: str, title: str, started_at: Optional[datetime] = None, ended_at: Optional[datetime] = None, first_message_content: str = "", first_sender: str = "") -> int:
         """Create a discussion in the database and return its ID."""
         from ..db import Discussion
         from datetime import timezone
@@ -301,6 +343,9 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         now = datetime.now(timezone.utc)
         started_at = started_at or now
         ended_at = ended_at or now
+        
+        # Generate topic keywords
+        topic_keywords = self._generate_topic_keywords(title, first_message_content)
         
         discussion = Discussion(
             analysis_run_id=self.run_id,
@@ -321,9 +366,13 @@ OUTPUT STRICT JSON (no markdown, no extra text):
             temp_id=temp_id,
             message_ids=[],
             started_at=started_at,
-            ended_at=ended_at
+            ended_at=ended_at,
+            last_active_window=self.state.current_window,
+            dormant=False,
+            topic_keywords=topic_keywords,
+            recent_participants=[first_sender] if first_sender else []
         )
-        logger.info(f"Created discussion {db_id}: {title}")
+        logger.info(f"Created discussion {db_id}: {title} (keywords: {topic_keywords})")
         return db_id
     
     def _add_message_to_discussion(self, discussion_id: int, message_id: int, confidence: float):
@@ -351,6 +400,19 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         if discussion:
             discussion.message_count = (discussion.message_count or 0) + 1
     
+    def _validate_and_log_suspicious(self, classification, assignment, disc, msg) -> None:
+        """Log suspicious classifications for review."""
+        windows_inactive = self.state.current_window - disc.last_active_window
+        
+        # Flag: high confidence assignment to discussion inactive for 3+ windows
+        if windows_inactive >= 3 and assignment.confidence >= 0.9:
+            msg_preview = (msg.content[:50] + "...") if msg.content and len(msg.content) > 50 else (msg.content or "")
+            logger.warning(
+                f"SUSPICIOUS: msg {classification.message_id} ('{msg_preview}') -> "
+                f"discussion '{disc.title}' (inactive {windows_inactive} windows) "
+                f"with confidence {assignment.confidence}"
+            )
+    
     def _update_state_from_response(
         self, 
         response: WindowClassificationResponse,
@@ -361,10 +423,32 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         
         message_map = {m.id: m for m in messages}
         
+        # Track which discussions received messages in this window
+        discussions_active_this_window = set()
+        
         # First, create any new discussions declared in new_discussions
         for new_disc in response.new_discussions:
             if new_disc.temp_id not in self.state.temp_id_to_db_id:
-                self._create_discussion_in_db(new_disc.temp_id, new_disc.title)
+                # Try to find first message for this discussion to get content/sender
+                first_msg_content = ""
+                first_sender = ""
+                for cls in response.classifications:
+                    for asgn in cls.assignments:
+                        if asgn.discussion_id == new_disc.temp_id:
+                            msg = message_map.get(cls.message_id)
+                            if msg:
+                                first_msg_content = msg.content or ""
+                                first_sender = msg.sender.display_name if msg.sender else ""
+                            break
+                    if first_msg_content:
+                        break
+                
+                self._create_discussion_in_db(
+                    new_disc.temp_id, 
+                    new_disc.title,
+                    first_message_content=first_msg_content,
+                    first_sender=first_sender
+                )
         
         # Process classifications
         for classification in response.classifications:
@@ -383,7 +467,16 @@ OUTPUT STRICT JSON (no markdown, no extra text):
                         db_id = self.state.temp_id_to_db_id[temp_id]
                     elif assignment.title:
                         # Create new discussion for unrecognized temp_id
-                        db_id = self._create_discussion_in_db(temp_id, assignment.title, msg.timestamp, msg.timestamp)
+                        first_msg_content = msg.content or ""
+                        first_sender = msg.sender.display_name if msg.sender else ""
+                        db_id = self._create_discussion_in_db(
+                            temp_id, 
+                            assignment.title, 
+                            msg.timestamp, 
+                            msg.timestamp,
+                            first_msg_content,
+                            first_sender
+                        )
                     else:
                         logger.warning(f"Unknown discussion temp_id {temp_id} with no title, skipping")
                         continue
@@ -403,6 +496,9 @@ OUTPUT STRICT JSON (no markdown, no extra text):
                     logger.warning(f"Discussion {db_id} not in active state, skipping")
                     continue
                 
+                # Validation: log suspicious assignments
+                self._validate_and_log_suspicious(classification, assignment, disc, msg)
+                
                 # Check max messages limit
                 if len(disc.message_ids) >= self.MAX_MESSAGES_PER_DISCUSSION:
                     logger.warning(f"Discussion {db_id} hit max message limit")
@@ -412,6 +508,17 @@ OUTPUT STRICT JSON (no markdown, no extra text):
                 if msg_id not in disc.message_ids:
                     disc.message_ids.append(msg_id)
                     self._add_message_to_discussion(db_id, msg_id, assignment.confidence)
+                
+                # Track that this discussion was active
+                discussions_active_this_window.add(db_id)
+                
+                # Update participant list
+                sender_name = msg.sender.display_name if msg.sender else "Unknown"
+                if sender_name not in disc.recent_participants:
+                    disc.recent_participants.append(sender_name)
+                    # Keep only most recent 5
+                    if len(disc.recent_participants) > 5:
+                        disc.recent_participants = disc.recent_participants[-5:]
                 
                 # Update timestamps
                 if disc.started_at is None or msg.timestamp < disc.started_at:
@@ -426,6 +533,25 @@ OUTPUT STRICT JSON (no markdown, no extra text):
                         db_disc.started_at = msg.timestamp
                     if db_disc.ended_at is None or msg.timestamp > db_disc.ended_at:
                         db_disc.ended_at = msg.timestamp
+        
+        # Update last_active_window for discussions that received messages
+        for db_id in discussions_active_this_window:
+            if db_id in self.state.active_discussions:
+                self.state.active_discussions[db_id].last_active_window = self.state.current_window
+                # Revive dormant discussions if they got new messages
+                if self.state.active_discussions[db_id].dormant:
+                    self.state.active_discussions[db_id].dormant = False
+                    logger.info(f"Discussion {db_id} revived from dormancy")
+        
+        # Check for discussions that should go dormant (5+ windows without activity)
+        DORMANCY_THRESHOLD = 5
+        for db_id, disc in self.state.active_discussions.items():
+            if disc.ended or disc.dormant:
+                continue
+            windows_inactive = self.state.current_window - disc.last_active_window
+            if windows_inactive >= DORMANCY_THRESHOLD:
+                disc.dormant = True
+                logger.info(f"Discussion {db_id} ('{disc.title}') marked dormant after {windows_inactive} windows of inactivity")
         
         # Mark ended discussions
         for ended_id in response.discussions_ended:
@@ -478,11 +604,15 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         
         # Process each window
         window_start = 0
+        window_number = 0
         while window_start < total_messages:
+            window_number += 1
+            self.state.current_window = window_number  # Track for dormancy calculations
+            
             window_end = min(window_start + self.WINDOW_SIZE, total_messages)
             window_messages = all_messages[window_start:window_end]
             
-            logger.info(f"Processing window {self.state.windows_processed + 1}/{total_windows} (messages {window_start}-{window_end})")
+            logger.info(f"Processing window {window_number}/{total_windows} (messages {window_start}-{window_end})")
             
             # Process window
             response = self._process_window(window_messages)

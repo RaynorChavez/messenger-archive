@@ -261,6 +261,48 @@ async def get_analysis_status(
     )
 
 
+@router.get("/timeline")
+async def get_timeline(
+    topic_id: Optional[int] = Query(None, description="Filter by topic ID"),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get discussion counts grouped by date for timeline display."""
+    from sqlalchemy import cast, Date
+    
+    # Base query - group by date
+    query = db.query(
+        cast(Discussion.started_at, Date).label("date"),
+        func.count(Discussion.id).label("count")
+    )
+    
+    # Apply topic filter if specified
+    if topic_id is not None:
+        query = query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    
+    # Group by date and order descending
+    results = (
+        query
+        .group_by(cast(Discussion.started_at, Date))
+        .order_by(desc(cast(Discussion.started_at, Date)))
+        .all()
+    )
+    
+    # Get total count
+    count_query = db.query(func.count(Discussion.id))
+    if topic_id is not None:
+        count_query = count_query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    total = count_query.scalar() or 0
+    
+    return {
+        "timeline": [
+            {"date": str(r.date), "count": r.count}
+            for r in results
+        ],
+        "total": total
+    }
+
+
 @router.get("", response_model=DiscussionListResponse)
 async def list_discussions(
     page: int = Query(1, ge=1),
