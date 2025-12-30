@@ -340,6 +340,33 @@ export interface DiscussionFull extends DiscussionBrief {
   messages: DiscussionMessage[];
 }
 
+export interface ContextMessage {
+  id: number;
+  content: string | null;
+  timestamp: string;
+  sender: Person | null;
+}
+
+export interface DiscussionContextResponse {
+  position: "before" | "after";
+  messages: ContextMessage[];
+  has_more: boolean;
+}
+
+export interface GapInfo {
+  after_message_id: number;
+  before_message_id: number;
+  count: number;
+}
+
+export interface DiscussionGapsResponse {
+  gaps: GapInfo[];
+}
+
+export interface GapMessagesResponse {
+  messages: ContextMessage[];
+}
+
 export interface DiscussionListResponse {
   discussions: DiscussionBrief[];
   total: number;
@@ -393,10 +420,23 @@ export interface TimelineResponse {
 }
 
 export const discussions = {
-  list: (params?: { page?: number; page_size?: number; topic_id?: number }) =>
+  list: (params?: { page?: number; page_size?: number; topic_id?: number; date?: string }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),
 
   get: (id: number) => fetchAPI<DiscussionFull>(`/discussions/${id}`),
+
+  context: (id: number, position: "before" | "after", limit?: number) =>
+    fetchAPI<DiscussionContextResponse>(`/discussions/${id}/context`, {
+      params: { position, limit },
+    }),
+
+  gaps: (id: number) =>
+    fetchAPI<DiscussionGapsResponse>(`/discussions/${id}/gaps`),
+
+  gapMessages: (id: number, afterMessageId: number, beforeMessageId: number) =>
+    fetchAPI<GapMessagesResponse>(`/discussions/${id}/gap-messages`, {
+      params: { after_message_id: afterMessageId, before_message_id: beforeMessageId },
+    }),
 
   timeline: (params?: { topic_id?: number }) =>
     fetchAPI<TimelineResponse>("/discussions/timeline", { params }),

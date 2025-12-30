@@ -308,10 +308,13 @@ async def list_discussions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     topic_id: Optional[int] = Query(None, description="Filter by topic ID"),
+    date: Optional[str] = Query(None, description="Filter by date (YYYY-MM-DD)"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """List all detected discussions, optionally filtered by topic."""
+    """List all detected discussions, optionally filtered by topic and/or date."""
+    from sqlalchemy import cast, Date
+    
     # Base query
     query = db.query(Discussion)
     count_query = db.query(func.count(Discussion.id))
@@ -320,6 +323,11 @@ async def list_discussions(
     if topic_id is not None:
         query = query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
         count_query = count_query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    
+    # Apply date filter if specified
+    if date is not None:
+        query = query.filter(cast(Discussion.started_at, Date) == date)
+        count_query = count_query.filter(cast(Discussion.started_at, Date) == date)
     
     total = count_query.scalar() or 0
     
@@ -425,6 +433,190 @@ async def get_discussion(
         participant_count=discussion.participant_count,
         messages=messages
     )
+
+
+@router.get("/{discussion_id}/context")
+async def get_discussion_context(
+    discussion_id: int,
+    position: str = Query(..., regex="^(before|after)$", description="Get messages before or after the discussion"),
+    limit: int = Query(5, ge=1, le=20, description="Number of context messages to fetch"),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get context messages before or after a discussion (messages not part of the discussion)."""
+    discussion = db.query(Discussion).filter(Discussion.id == discussion_id).first()
+    
+    if not discussion:
+        raise HTTPException(status_code=404, detail="Discussion not found")
+    
+    # Get the discussion's message IDs to exclude them
+    discussion_message_ids = [
+        dm.message_id for dm in 
+        db.query(DiscussionMessage.message_id)
+        .filter(DiscussionMessage.discussion_id == discussion_id)
+        .all()
+    ]
+    
+    if position == "before":
+        # Get messages before the discussion started
+        query = (
+            db.query(Message, Person)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.timestamp < discussion.started_at)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+        )
+        if discussion_message_ids:
+            query = query.filter(Message.id.notin_(discussion_message_ids))
+        context_messages = query.order_by(desc(Message.timestamp)).limit(limit).all()
+        # Reverse to get chronological order
+        context_messages = list(reversed(context_messages))
+    else:
+        # Get messages after the discussion ended
+        query = (
+            db.query(Message, Person)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.timestamp > discussion.ended_at)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+        )
+        if discussion_message_ids:
+            query = query.filter(Message.id.notin_(discussion_message_ids))
+        context_messages = query.order_by(Message.timestamp).limit(limit).all()
+    
+    messages = []
+    for msg, sender in context_messages:
+        sender_brief = None
+        if sender:
+            sender_brief = PersonBrief(
+                id=sender.id,
+                display_name=sender.display_name,
+                avatar_url=sender.avatar_url
+            )
+        
+        messages.append({
+            "id": msg.id,
+            "content": msg.content,
+            "timestamp": msg.timestamp.isoformat(),
+            "sender": sender_brief.model_dump() if sender_brief else None,
+        })
+    
+    return {
+        "position": position,
+        "messages": messages,
+        "has_more": len(messages) == limit  # If we got the full limit, there might be more
+    }
+
+
+@router.get("/{discussion_id}/gaps")
+async def get_discussion_gaps(
+    discussion_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get information about message gaps within a discussion (messages not part of the discussion)."""
+    discussion = db.query(Discussion).filter(Discussion.id == discussion_id).first()
+    
+    if not discussion:
+        raise HTTPException(status_code=404, detail="Discussion not found")
+    
+    # Get discussion message IDs and timestamps
+    discussion_messages = (
+        db.query(Message.id, Message.timestamp)
+        .join(DiscussionMessage, Message.id == DiscussionMessage.message_id)
+        .filter(DiscussionMessage.discussion_id == discussion_id)
+        .order_by(Message.timestamp)
+        .all()
+    )
+    
+    if len(discussion_messages) < 2:
+        return {"gaps": []}
+    
+    discussion_msg_ids = {m.id for m in discussion_messages}
+    
+    # Find gaps between consecutive discussion messages
+    gaps = []
+    for i in range(len(discussion_messages) - 1):
+        current_msg = discussion_messages[i]
+        next_msg = discussion_messages[i + 1]
+        
+        # Count messages between these two that are NOT in the discussion
+        gap_count = (
+            db.query(func.count(Message.id))
+            .filter(Message.timestamp > current_msg.timestamp)
+            .filter(Message.timestamp < next_msg.timestamp)
+            .filter(Message.id.notin_(discussion_msg_ids))
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .scalar()
+        )
+        
+        if gap_count > 0:
+            gaps.append({
+                "after_message_id": current_msg.id,
+                "before_message_id": next_msg.id,
+                "count": gap_count,
+            })
+    
+    return {"gaps": gaps}
+
+
+@router.get("/{discussion_id}/gap-messages")
+async def get_gap_messages(
+    discussion_id: int,
+    after_message_id: int = Query(..., description="Message ID after which the gap starts"),
+    before_message_id: int = Query(..., description="Message ID before which the gap ends"),
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get the messages within a specific gap."""
+    # Get the timestamps for the boundary messages
+    after_msg = db.query(Message.timestamp).filter(Message.id == after_message_id).first()
+    before_msg = db.query(Message.timestamp).filter(Message.id == before_message_id).first()
+    
+    if not after_msg or not before_msg:
+        raise HTTPException(status_code=404, detail="Boundary messages not found")
+    
+    # Get discussion message IDs to exclude
+    discussion_msg_ids = [
+        dm.message_id for dm in 
+        db.query(DiscussionMessage.message_id)
+        .filter(DiscussionMessage.discussion_id == discussion_id)
+        .all()
+    ]
+    
+    # Get messages in the gap
+    query = (
+        db.query(Message, Person)
+        .outerjoin(Person, Message.sender_id == Person.id)
+        .filter(Message.timestamp > after_msg.timestamp)
+        .filter(Message.timestamp < before_msg.timestamp)
+        .filter(Message.content.isnot(None))
+        .filter(Message.content != "")
+    )
+    if discussion_msg_ids:
+        query = query.filter(Message.id.notin_(discussion_msg_ids))
+    
+    gap_messages = query.order_by(Message.timestamp).all()
+    
+    messages = []
+    for msg, sender in gap_messages:
+        sender_brief = None
+        if sender:
+            sender_brief = PersonBrief(
+                id=sender.id,
+                display_name=sender.display_name,
+                avatar_url=sender.avatar_url
+            )
+        
+        messages.append({
+            "id": msg.id,
+            "content": msg.content,
+            "timestamp": msg.timestamp.isoformat(),
+            "sender": sender_brief.model_dump() if sender_brief else None,
+        })
+    
+    return {"messages": messages}
 
 
 # =============================================================================

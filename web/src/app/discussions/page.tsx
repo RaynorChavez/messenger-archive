@@ -85,14 +85,17 @@ export default function DiscussionsPage() {
   // Virtualization
   const parentRef = useRef<HTMLDivElement>(null);
 
-  const loadDiscussions = useCallback(async (topicId?: number | null, page: number = 1, append: boolean = false) => {
+  const loadDiscussions = useCallback(async (topicId?: number | null, date?: string | null, page: number = 1, append: boolean = false) => {
     try {
-      const params: { topic_id?: number; page?: number; page_size?: number } = {
+      const params: { topic_id?: number; date?: string; page?: number; page_size?: number } = {
         page,
         page_size: 50,
       };
       if (topicId !== null && topicId !== undefined) {
         params.topic_id = topicId;
+      }
+      if (date !== null && date !== undefined) {
+        params.date = date;
       }
       const result = await discussions.list(params);
       
@@ -101,7 +104,6 @@ export default function DiscussionsPage() {
       } else {
         setData(result.discussions);
       }
-      setTotal(result.total);
       setCurrentPage(page);
       setHasMore(page < result.total_pages);
     } catch (err) {
@@ -168,13 +170,19 @@ export default function DiscussionsPage() {
     load();
   }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus]);
 
-  // Reload discussions and timeline when topic filter changes
+  // Reload discussions when topic or date filter changes
   useEffect(() => {
     if (!loading) {
-      loadDiscussions(selectedTopicId);
+      loadDiscussions(selectedTopicId, selectedDate);
+    }
+  }, [selectedTopicId, selectedDate, loadDiscussions, loading]);
+
+  // Reload timeline when topic filter changes (not date - timeline shows all dates)
+  useEffect(() => {
+    if (!loading) {
       loadTimeline(selectedTopicId);
     }
-  }, [selectedTopicId, loadDiscussions, loadTimeline, loading]);
+  }, [selectedTopicId, loadTimeline, loading]);
 
   // Poll for status and discussions while analysis is running
   useEffect(() => {
@@ -183,13 +191,13 @@ export default function DiscussionsPage() {
     const interval = setInterval(async () => {
       await Promise.all([
         loadStatus(),
-        loadDiscussions(selectedTopicId),
+        loadDiscussions(selectedTopicId, selectedDate),
         loadTimeline(selectedTopicId),
       ]);
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId]);
+  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId, selectedDate]);
 
   // Poll for topic classification status
   useEffect(() => {
@@ -198,18 +206,12 @@ export default function DiscussionsPage() {
     const interval = setInterval(async () => {
       const status = await loadTopicClassificationStatus();
       if (status?.status === "completed") {
-        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId), loadTimeline(selectedTopicId)]);
+        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId, selectedDate), loadTimeline(selectedTopicId)]);
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId]);
-
-  // Filter discussions by selected date
-  const filteredDiscussions = useMemo(() => {
-    if (!selectedDate) return data;
-    return data.filter((d) => d.started_at.startsWith(selectedDate));
-  }, [data, selectedDate]);
+  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId, selectedDate]);
 
   const handleStartAnalysis = async () => {
     setStartingAnalysis(true);
@@ -243,15 +245,15 @@ export default function DiscussionsPage() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      await loadDiscussions(selectedTopicId, currentPage + 1, true);
+      await loadDiscussions(selectedTopicId, selectedDate, currentPage + 1, true);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, loadDiscussions, selectedTopicId, currentPage]);
+  }, [loadingMore, hasMore, loadDiscussions, selectedTopicId, selectedDate, currentPage]);
 
   // Virtualizer for discussions list
   const rowVirtualizer = useVirtualizer({
-    count: filteredDiscussions.length,
+    count: data.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 120, // Estimated height of each discussion card
     overscan: 5,
@@ -265,10 +267,10 @@ export default function DiscussionsPage() {
     if (!lastItem) return;
     
     // If we're within 5 items of the end and have more data, load more
-    if (lastItem.index >= filteredDiscussions.length - 5 && hasMore && !loadingMore && !selectedDate) {
+    if (lastItem.index >= data.length - 5 && hasMore && !loadingMore) {
       loadMore();
     }
-  }, [lastItem?.index, filteredDiscussions.length, hasMore, loadingMore, loadMore, selectedDate]);
+  }, [lastItem?.index, data.length, hasMore, loadingMore, loadMore]);
 
   if (loading) {
     return (
@@ -289,9 +291,9 @@ export default function DiscussionsPage() {
 
   return (
     <AppLayout>
-      <div className="space-y-6">
+      <div className="flex flex-col h-full gap-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">
             <Sparkles className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-bold">Discussions</h1>
@@ -326,7 +328,7 @@ export default function DiscussionsPage() {
 
         {/* Progress bars */}
         {isRunning && (
-          <div className="space-y-1">
+          <div className="space-y-1 flex-shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Analysis: {analysisStatus.windows_processed} / {analysisStatus.total_windows} windows</span>
               <span>{analysisStatus.discussions_found} discussions</span>
@@ -341,7 +343,7 @@ export default function DiscussionsPage() {
         )}
 
         {isClassifying && (
-          <div className="space-y-1">
+          <div className="space-y-1 flex-shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Classifying topics...</span>
             </div>
@@ -353,7 +355,7 @@ export default function DiscussionsPage() {
 
         {/* Topic filter bar */}
         {topics.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-2 -mx-2 px-2">
+          <div className="flex gap-2 overflow-x-auto pb-2 -mx-2 px-2 flex-shrink-0">
             <TopicPill
               topic={null}
               selected={selectedTopicId === null}
@@ -370,7 +372,7 @@ export default function DiscussionsPage() {
           </div>
         )}
 
-        <p className="text-muted-foreground">
+        <p className="text-muted-foreground flex-shrink-0">
           AI-detected thematic discussions extracted from the chat history.
         </p>
 
@@ -413,62 +415,62 @@ export default function DiscussionsPage() {
         )}
 
         {/* Main content with timeline */}
-        <div className="flex gap-6">
+        <div className="flex gap-6 flex-1 min-h-0">
           {/* Timeline sidebar */}
           {timeline.length > 0 && (
-            <div className="w-48 flex-shrink-0">
-              <div className="sticky top-4">
-                <h3 className="text-sm font-medium mb-3 text-muted-foreground">Timeline</h3>
-                <div className="relative">
-                  {/* Vertical line */}
-                  <div className="absolute left-[7px] top-2 bottom-2 w-0.5 bg-border" />
-                  
-                  {/* All dates option */}
-                  <button
-                    onClick={() => setSelectedDate(null)}
-                    className={`relative flex items-center gap-3 w-full text-left py-2 group ${
-                      selectedDate === null ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            <div className="w-48 flex-shrink-0 overflow-y-auto relative">
+              <div className="sticky top-0 bg-background z-20 pb-3">
+                <h3 className="text-sm font-medium text-muted-foreground">Timeline</h3>
+              </div>
+              <div className="relative">
+                {/* Vertical line */}
+                <div className="absolute left-[7px] top-0 bottom-2 w-0.5 bg-border" />
+                
+                {/* All dates option */}
+                <button
+                  onClick={() => setSelectedDate(null)}
+                  className={`relative flex items-center gap-3 w-full text-left py-2 group ${
+                    selectedDate === null ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
+                      selectedDate === null
+                        ? "bg-primary border-primary"
+                        : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
                     }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
-                        selectedDate === null
-                          ? "bg-primary border-primary"
-                          : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
-                      }`}
-                    />
-                    <span className="text-sm font-medium">All dates</span>
-                    <span className="text-xs text-muted-foreground ml-auto">{total}</span>
-                  </button>
+                  />
+                  <span className="text-sm font-medium">All dates</span>
+                  <span className="text-xs text-muted-foreground ml-auto">{total}</span>
+                </button>
 
-                  {timeline.map(({ date, count }) => {
-                    const dateObj = new Date(date + "T00:00:00");
-                    return (
-                      <button
-                        key={date}
-                        onClick={() => setSelectedDate(date)}
-                        className={`relative flex items-center gap-3 w-full text-left py-2 group ${
-                          selectedDate === date ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                {timeline.map(({ date, count }) => {
+                  const dateObj = new Date(date + "T00:00:00");
+                  return (
+                    <button
+                      key={date}
+                      onClick={() => setSelectedDate(date)}
+                      className={`relative flex items-center gap-3 w-full text-left py-2 group ${
+                        selectedDate === date ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {/* Bead */}
+                      <div
+                        className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
+                          selectedDate === date
+                            ? "bg-primary border-primary"
+                            : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
                         }`}
-                      >
-                        {/* Bead */}
-                        <div
-                          className={`w-4 h-4 rounded-full border-2 flex-shrink-0 z-10 transition-colors ${
-                            selectedDate === date
-                              ? "bg-primary border-primary"
-                              : "bg-background border-muted-foreground/30 group-hover:border-muted-foreground"
-                          }`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm">
-                            {dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                          </span>
-                          <span className="text-xs text-muted-foreground ml-2">{count}</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm">
+                          {dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </span>
+                        <span className="text-xs text-muted-foreground ml-2">{count}</span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -477,9 +479,8 @@ export default function DiscussionsPage() {
           <div 
             ref={parentRef}
             className="flex-1 overflow-auto"
-            style={{ height: "calc(100vh - 300px)" }}
           >
-            {filteredDiscussions.length > 0 ? (
+            {data.length > 0 ? (
               <div
                 style={{
                   height: `${rowVirtualizer.getTotalSize()}px`,
@@ -488,7 +489,7 @@ export default function DiscussionsPage() {
                 }}
               >
                 {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const discussion = filteredDiscussions[virtualRow.index];
+                  const discussion = data[virtualRow.index];
                   return (
                     <div
                       key={discussion.id}
