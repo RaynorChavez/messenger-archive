@@ -3,10 +3,15 @@ Archive Service - Listens to Matrix events and stores messages to PostgreSQL.
 
 This service connects to the Dendrite homeserver, listens for messages
 from bridged Messenger rooms, and archives them with sender and reply info.
+
+Auto-links people imported from Facebook export when they become active via
+the Matrix bridge, updating their records with matrix_user_id, avatar_url,
+and fb_profile_url.
 """
 
 import asyncio
 import logging
+import unicodedata
 from datetime import datetime
 from typing import Optional
 
@@ -26,23 +31,113 @@ engine = create_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine)
 
 
-async def get_or_create_person(db, matrix_user_id: str, display_name: Optional[str] = None):
-    """Get or create a person record."""
+def normalize_name(name: str) -> str:
+    """Normalize a name for matching purposes."""
+    if not name:
+        return ""
+    name = unicodedata.normalize('NFC', name)
+    name = name.lower().strip()
+    name = ' '.join(name.split())
+    return name
+
+
+def extract_fb_profile_url(matrix_user_id: str) -> Optional[str]:
+    """Extract Facebook profile URL from Matrix user ID."""
+    # Format: @meta_123456:domain -> https://www.facebook.com/123456
+    if not matrix_user_id:
+        return None
+    localpart = matrix_user_id.split(":")[0].lstrip("@") if ":" in matrix_user_id else matrix_user_id
+    if localpart.startswith("meta_"):
+        fb_id = localpart.replace("meta_", "")
+        if fb_id.isdigit():
+            return f"https://www.facebook.com/{fb_id}"
+    return None
+
+
+async def get_or_create_person(db, matrix_user_id: str, display_name: Optional[str] = None, avatar_url: Optional[str] = None):
+    """
+    Get or create a person record.
+    
+    If a person with this matrix_user_id already exists, return their ID.
+    
+    If not, try to match by display name to link with FB-imported people.
+    This handles the case where someone was imported from Facebook export
+    and later becomes active via the Matrix bridge.
+    """
+    # First, check if this exact matrix_user_id exists
     result = db.execute(
         text("SELECT id FROM people WHERE matrix_user_id = :user_id"),
         {"user_id": matrix_user_id}
     ).fetchone()
     
     if result:
+        # Update avatar_url if we have a new one
+        if avatar_url:
+            db.execute(
+                text("UPDATE people SET avatar_url = :avatar_url WHERE id = :id AND (avatar_url IS NULL OR avatar_url = '')"),
+                {"avatar_url": avatar_url, "id": result[0]}
+            )
+            db.commit()
         return result[0]
     
+    # Try to find a matching FB-imported person by display name
+    # FB imports have matrix_user_id like '@fb_import_xxx:archive.local'
+    fb_profile_url = extract_fb_profile_url(matrix_user_id)
+    
+    if display_name:
+        norm_name = normalize_name(display_name)
+        
+        # Look for FB-imported people with matching name
+        match_result = db.execute(
+            text("""
+                SELECT id, display_name, fb_name 
+                FROM people 
+                WHERE matrix_user_id LIKE '@fb_import_%'
+                AND (
+                    LOWER(TRIM(display_name)) = :norm_name
+                    OR LOWER(TRIM(fb_name)) = :norm_name
+                )
+                LIMIT 1
+            """),
+            {"norm_name": norm_name}
+        ).fetchone()
+        
+        if match_result:
+            person_id = match_result[0]
+            logger.info(f"Auto-linking FB-imported person '{match_result[1]}' to Matrix user {matrix_user_id}")
+            
+            # Update the FB-imported person with real Matrix info
+            db.execute(
+                text("""
+                    UPDATE people 
+                    SET matrix_user_id = :matrix_user_id,
+                        avatar_url = COALESCE(:avatar_url, avatar_url),
+                        fb_profile_url = COALESCE(:fb_profile_url, fb_profile_url)
+                    WHERE id = :id
+                """),
+                {
+                    "matrix_user_id": matrix_user_id,
+                    "avatar_url": avatar_url,
+                    "fb_profile_url": fb_profile_url,
+                    "id": person_id
+                }
+            )
+            db.commit()
+            return person_id
+    
+    # No match found, create new person
     result = db.execute(
         text("""
-            INSERT INTO people (matrix_user_id, display_name)
-            VALUES (:user_id, :display_name)
+            INSERT INTO people (matrix_user_id, display_name, avatar_url, fb_profile_url)
+            VALUES (:user_id, :display_name, :avatar_url, :fb_profile_url)
             RETURNING id
         """),
-        {"user_id": matrix_user_id, "display_name": display_name}
+        {
+            "user_id": matrix_user_id, 
+            "display_name": display_name,
+            "avatar_url": avatar_url,
+            "fb_profile_url": fb_profile_url
+        }
     )
     db.commit()
     return result.fetchone()[0]
@@ -138,11 +233,17 @@ class ArchiveClient:
                 if settings.archive_room_filter.lower() not in room_name.lower():
                     return  # Skip this room
             
-            # Get or create sender
+            # Get sender's avatar URL from room member info
+            avatar_url = None
+            if event.sender in room.users:
+                avatar_url = room.users[event.sender].avatar_url
+            
+            # Get or create sender (with auto-linking for FB imports)
             sender_id = await get_or_create_person(
                 self.db,
                 event.sender,
-                room.user_name(event.sender)
+                room.user_name(event.sender),
+                avatar_url
             )
             
             # Get or create room

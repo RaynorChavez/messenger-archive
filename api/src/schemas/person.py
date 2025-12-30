@@ -9,10 +9,16 @@ class PersonResponse(BaseModel):
     matrix_user_id: str
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
+    fb_profile_url: Optional[str] = None
     notes: Optional[str] = None
     message_count: int = 0
     last_message_at: Optional[datetime] = None
     created_at: datetime
+    
+    # AI Summary fields
+    ai_summary: Optional[str] = None
+    ai_summary_generated_at: Optional[datetime] = None
+    ai_summary_stale: bool = False  # True if 30+ new messages since last summary
     
     class Config:
         from_attributes = True

@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    
+    # AI (Gemini)
+    gemini_api_key: str = ""
+    gemini_rate_limit_tokens_per_min: int = 800_000
 
 
 @lru_cache()

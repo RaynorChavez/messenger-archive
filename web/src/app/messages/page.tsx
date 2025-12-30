@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { messages, type Message, type MessageListResponse } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
@@ -10,12 +10,14 @@ export default function MessagesPage() {
   const [data, setData] = useState<MessageListResponse | null>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const result = await messages.list({ page, page_size: 50 });
         setData(result);
+        scrollRef.current?.scrollTo(0, 0);
       } catch (error) {
         console.error("Failed to load messages:", error);
       } finally {
@@ -37,16 +39,21 @@ export default function MessagesPage() {
 
   return (
     <AppLayout>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-bold">Messages</h1>
+          {data && (
+            <span className="text-sm text-muted-foreground">
+              {data.total.toLocaleString()} messages
+            </span>
+          )}
         </div>
 
-        {/* Messages list */}
-        <div className="rounded-xl border bg-card divide-y">
-          {data?.messages.map((msg) => (
-            <div key={msg.id} className="p-4">
-              <div className="flex items-start gap-3">
+        {/* Messages list - scrollable */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto rounded-xl border bg-card">
+          <div className="p-4 space-y-3">
+            {data?.messages.map((msg) => (
+              <div key={msg.id} className="flex items-start gap-3">
                 <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-sm font-medium shrink-0">
                   {msg.sender?.display_name?.[0] || "?"}
                 </div>
@@ -68,13 +75,13 @@ export default function MessagesPage() {
                   <p className="mt-1 text-sm">{msg.content}</p>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
-        {/* Pagination */}
+        {/* Pagination - fixed at bottom */}
         {data && data.total_pages > 1 && (
-          <div className="flex items-center justify-center gap-2">
+          <div className="flex items-center justify-center gap-2 pt-4">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}

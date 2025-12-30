@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { people, type PersonFull } from "@/lib/api";
+import { people, type PersonFull, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 
 export default function PeoplePage() {
@@ -47,9 +47,17 @@ export default function PeoplePage() {
               className="rounded-xl border bg-card p-6 hover:border-primary transition-colors"
             >
               <div className="flex flex-col items-center text-center">
-                <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center text-xl font-medium mb-3">
-                  {person.display_name?.[0] || "?"}
-                </div>
+                {mxcToHttp(person.avatar_url) ? (
+                  <img
+                    src={mxcToHttp(person.avatar_url)!}
+                    alt={person.display_name || "Avatar"}
+                    className="h-16 w-16 rounded-full object-cover mb-3"
+                  />
+                ) : (
+                  <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center text-xl font-medium mb-3">
+                    {person.display_name?.[0] || "?"}
+                  </div>
+                )}
                 <h3 className="font-medium">
                   {person.display_name || "Unknown"}
                 </h3>
@@ -60,6 +68,17 @@ export default function PeoplePage() {
                   <p className="text-xs text-muted-foreground mt-1">
                     Last: {formatRelativeTime(person.last_message_at)}
                   </p>
+                )}
+                {person.fb_profile_url && (
+                  <a
+                    href={person.fb_profile_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-500 hover:underline mt-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    Facebook Profile
+                  </a>
                 )}
               </div>
             </Link>

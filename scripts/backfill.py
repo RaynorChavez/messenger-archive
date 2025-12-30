@@ -95,13 +95,27 @@ def get_synapse_messages(synapse_db, room_filter=None, limit=10000):
     return messages
 
 
-def get_sender_display_name(synapse_db, user_id):
-    """Get display name for a user from Synapse."""
+def get_sender_profile(synapse_db, user_id):
+    """Get display name and avatar for a user from Synapse."""
+    # Extract localpart from full Matrix ID (@user:domain -> user)
+    localpart = user_id.split(":")[0].lstrip("@") if ":" in user_id else user_id
+    
     query = """
-        SELECT displayname FROM profiles WHERE user_id = :user_id
+        SELECT displayname, avatar_url FROM profiles WHERE user_id = :user_id
     """
-    result = synapse_db.execute(text(query), {"user_id": user_id}).fetchone()
-    return result[0] if result else None
+    result = synapse_db.execute(text(query), {"user_id": localpart}).fetchone()
+    
+    display_name = result[0] if result else None
+    avatar_url = result[1] if result else None
+    
+    # Extract Facebook ID from Matrix user ID (e.g., @meta_123456:domain -> 123456)
+    fb_profile_url = None
+    if localpart.startswith("meta_"):
+        fb_id = localpart.replace("meta_", "")
+        if fb_id.isdigit():
+            fb_profile_url = f"https://www.facebook.com/{fb_id}"
+    
+    return display_name, avatar_url, fb_profile_url
 
 
 def backfill_archive(synapse_db, archive_db, messages):
@@ -160,14 +174,19 @@ def backfill_archive(synapse_db, archive_db, messages):
             if person_result:
                 people_cache[msg["sender"]] = person_result[0]
             else:
-                display_name = get_sender_display_name(synapse_db, msg["sender"])
+                display_name, avatar_url, fb_profile_url = get_sender_profile(synapse_db, msg["sender"])
                 person_result = archive_db.execute(
                     text("""
-                        INSERT INTO people (matrix_user_id, display_name)
-                        VALUES (:user_id, :display_name)
+                        INSERT INTO people (matrix_user_id, display_name, avatar_url, fb_profile_url)
+                        VALUES (:user_id, :display_name, :avatar_url, :fb_profile_url)
                         RETURNING id
                     """),
-                    {"user_id": msg["sender"], "display_name": display_name}
+                    {
+                        "user_id": msg["sender"], 
+                        "display_name": display_name,
+                        "avatar_url": avatar_url,
+                        "fb_profile_url": fb_profile_url
+                    }
                 )
                 archive_db.commit()
                 people_cache[msg["sender"]] = person_result.fetchone()[0]

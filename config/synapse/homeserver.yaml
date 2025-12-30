@@ -30,6 +30,9 @@ database:
     cp_max: 10
 log_config: "/data/archive.local.log.config"
 media_store_path: /data/media_store
+
+# Allow unauthenticated access to media
+enable_authenticated_media: false
 registration_shared_secret: ".gA0.2rq.yFt2p.&0mF0cod9&n.:0fRyEiL=BHK-JRo~z3JeE&"
 report_stats: false
 macaroon_secret_key: "9il=jg9tK+_6_JV5tP7hw8@&m5eYujP;LLTYr_-:S#2hJ0@#Ga"

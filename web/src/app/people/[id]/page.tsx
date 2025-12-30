@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { people, type PersonFull, type Message } from "@/lib/api";
+import { people, type PersonFull, type Message, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, Edit2 } from "lucide-react";
+import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle } from "lucide-react";
 
 export default function PersonDetailPage() {
   const params = useParams();
@@ -17,6 +17,8 @@ export default function PersonDetailPage() {
   const [loading, setLoading] = useState(true);
   const [editingNotes, setEditingNotes] = useState(false);
   const [notes, setNotes] = useState("");
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -44,6 +46,20 @@ export default function PersonDetailPage() {
       setEditingNotes(false);
     } catch (error) {
       console.error("Failed to save notes:", error);
+    }
+  };
+
+  const handleGenerateSummary = async () => {
+    setGeneratingSummary(true);
+    setSummaryError(null);
+    try {
+      const updated = await people.generateSummary(personId);
+      setPerson(updated);
+    } catch (error) {
+      console.error("Failed to generate summary:", error);
+      setSummaryError(error instanceof Error ? error.message : "Failed to generate summary");
+    } finally {
+      setGeneratingSummary(false);
     }
   };
 
@@ -81,26 +97,90 @@ export default function PersonDetailPage() {
         {/* Profile card */}
         <div className="rounded-xl border bg-card p-6">
           <div className="flex items-start gap-6">
-            <div className="h-20 w-20 rounded-full bg-muted flex items-center justify-center text-2xl font-medium">
-              {person.display_name?.[0] || "?"}
-            </div>
+            {mxcToHttp(person.avatar_url) ? (
+              <img
+                src={mxcToHttp(person.avatar_url)!}
+                alt={person.display_name || "Avatar"}
+                className="h-20 w-20 rounded-full object-cover"
+              />
+            ) : (
+              <div className="h-20 w-20 rounded-full bg-muted flex items-center justify-center text-2xl font-medium">
+                {person.display_name?.[0] || "?"}
+              </div>
+            )}
             <div className="flex-1">
               <h1 className="text-2xl font-bold">
                 {person.display_name || "Unknown"}
               </h1>
-              <p className="text-muted-foreground mt-1">
-                {person.message_count.toLocaleString()} messages · Member since{" "}
-                {new Date(person.created_at).toLocaleDateString()}
-              </p>
+              <div className="flex items-center gap-3 mt-1">
+                <p className="text-muted-foreground">
+                  {person.message_count.toLocaleString()} messages · Member since{" "}
+                  {new Date(person.created_at).toLocaleDateString()}
+                </p>
+                {person.fb_profile_url && (
+                  <a
+                    href={person.fb_profile_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-500 hover:underline"
+                  >
+                    Facebook Profile
+                  </a>
+                )}
+              </div>
 
-              {/* AI Summary placeholder */}
+              {/* AI Summary */}
               <div className="mt-4 rounded-lg border p-4 bg-muted/50">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium">AI Summary</span>
-                  <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
-                    Coming Soon
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {person.ai_summary_generated_at && (
+                      <span className="text-xs text-muted-foreground">
+                        Generated {formatRelativeTime(person.ai_summary_generated_at)}
+                      </span>
+                    )}
+                    <button
+                      onClick={handleGenerateSummary}
+                      disabled={generatingSummary}
+                      className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={person.ai_summary ? "Regenerate summary" : "Generate summary"}
+                    >
+                      {generatingSummary ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
+
+                {summaryError && (
+                  <div className="flex items-center gap-2 text-sm text-red-500 mb-2">
+                    <AlertCircle className="h-4 w-4" />
+                    {summaryError}
+                  </div>
+                )}
+
+                {generatingSummary ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Analyzing {person.message_count.toLocaleString()} messages...
+                  </div>
+                ) : person.ai_summary ? (
+                  <>
+                    <p className="text-sm whitespace-pre-wrap">{person.ai_summary}</p>
+                    {person.ai_summary_stale && (
+                      <p className="text-xs text-amber-500 mt-2 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        30+ new messages since last summary - click to regenerate
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No summary yet. Click the refresh button to generate one.
+                  </p>
+                )}
               </div>
 
               {/* Notes */}

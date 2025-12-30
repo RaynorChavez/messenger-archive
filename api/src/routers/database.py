@@ -101,7 +101,12 @@ async def get_people_table(
             "matrix_user_id": person.matrix_user_id,
             "display_name": person.display_name,
             "avatar_url": person.avatar_url,
+            "fb_profile_url": person.fb_profile_url,
+            "fb_name": person.fb_name,
             "notes": person.notes,
+            "ai_summary": person.ai_summary[:100] + "..." if person.ai_summary and len(person.ai_summary) > 100 else person.ai_summary,
+            "ai_summary_generated_at": person.ai_summary_generated_at.isoformat() if person.ai_summary_generated_at else None,
+            "ai_summary_message_count": person.ai_summary_message_count,
             "created_at": person.created_at.isoformat() if person.created_at else None,
             "updated_at": person.updated_at.isoformat() if person.updated_at else None,
         })

@@ -5,6 +5,7 @@ from .threads import router as threads_router
 from .stats import router as stats_router
 from .settings import router as settings_router
 from .database import router as database_router
+from .discussions import router as discussions_router
 
 __all__ = [
     "auth_router",
@@ -14,4 +15,5 @@ __all__ = [
     "stats_router",
     "settings_router",
     "database_router",
+    "discussions_router",
 ]

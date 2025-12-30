@@ -11,6 +11,7 @@ import {
   Settings,
   Search,
   Database,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,7 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Messages", href: "/messages", icon: MessageSquare },
   { name: "Threads", href: "/threads", icon: GitBranch },
+  { name: "Discussions", href: "/discussions", icon: Sparkles },
   { name: "People", href: "/people", icon: Users },
   { name: "Topics", href: "/topics", icon: Tag },
   { name: "Database", href: "/database", icon: Database },

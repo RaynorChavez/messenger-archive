@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.sql import func
@@ -25,9 +25,16 @@ class Person(Base):
     matrix_user_id = Column(String, unique=True, nullable=False, index=True)
     display_name = Column(String, nullable=True)
     avatar_url = Column(String, nullable=True)
+    fb_profile_url = Column(String, nullable=True)
+    fb_name = Column(String, nullable=True)  # Original FB name from export (for matching)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # AI Summary fields
+    ai_summary = Column(Text, nullable=True)
+    ai_summary_generated_at = Column(DateTime(timezone=True), nullable=True)
+    ai_summary_message_count = Column(Integer, default=0)
     
     messages = relationship("Message", back_populates="sender")
 
@@ -59,6 +66,51 @@ class Message(Base):
     room = relationship("Room", back_populates="messages")
     sender = relationship("Person", back_populates="messages")
     reply_to = relationship("Message", remote_side=[id], foreign_keys=[reply_to_message_id])
+    discussion_links = relationship("DiscussionMessage", back_populates="message")
+
+
+class DiscussionAnalysisRun(Base):
+    __tablename__ = "discussion_analysis_runs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String, default="running")  # running, completed, failed
+    windows_processed = Column(Integer, default=0)
+    total_windows = Column(Integer, nullable=True)
+    discussions_found = Column(Integer, default=0)
+    tokens_used = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    
+    discussions = relationship("Discussion", back_populates="analysis_run", cascade="all, delete-orphan")
+
+
+class Discussion(Base):
+    __tablename__ = "discussions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    analysis_run_id = Column(Integer, ForeignKey("discussion_analysis_runs.id", ondelete="CASCADE"), nullable=True)
+    title = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=False)
+    message_count = Column(Integer, default=0)
+    participant_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    analysis_run = relationship("DiscussionAnalysisRun", back_populates="discussions")
+    message_links = relationship("DiscussionMessage", back_populates="discussion", cascade="all, delete-orphan")
+
+
+class DiscussionMessage(Base):
+    __tablename__ = "discussion_messages"
+    
+    discussion_id = Column(Integer, ForeignKey("discussions.id", ondelete="CASCADE"), primary_key=True)
+    message_id = Column(Integer, ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True)
+    confidence = Column(Float, default=1.0)
+    
+    discussion = relationship("Discussion", back_populates="message_links")
+    message = relationship("Message", back_populates="discussion_links")
 
 
 # =============================================================================

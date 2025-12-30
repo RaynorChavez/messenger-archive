@@ -53,36 +53,9 @@ async def list_threads(
     List threads (conversations with replies).
     A thread is defined as a root message that has at least one reply.
     """
-    # Find messages that are replied to (these are thread roots)
-    thread_roots_subq = (
-        db.query(Message.reply_to_message_id)
-        .filter(Message.reply_to_message_id.isnot(None))
-        .distinct()
-        .subquery()
-    )
-    
-    # Get root messages with reply counts
-    root_messages = (
-        db.query(
-            Message,
-            func.count(Message.id).label("reply_count"),
-            func.max(Message.timestamp).label("last_reply_at")
-        )
-        .filter(Message.id.in_(
-            db.query(thread_roots_subq.c.reply_to_message_id)
-        ))
-        .outerjoin(
-            Message,
-            Message.reply_to_message_id == Message.id
-        )
-        .group_by(Message.id)
-        .order_by(desc(func.max(Message.timestamp)))
-    )
-    
-    total = root_messages.count()
     offset = (page - 1) * page_size
     
-    # Simplified query - just get messages that have replies
+    # Get messages that have replies (these are thread roots)
     reply_to_ids = (
         db.query(Message.reply_to_message_id)
         .filter(Message.reply_to_message_id.isnot(None))

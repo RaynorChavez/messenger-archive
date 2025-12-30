@@ -106,10 +106,29 @@ export interface PersonFull {
   matrix_user_id: string;
   display_name: string | null;
   avatar_url: string | null;
+  fb_profile_url: string | null;
   notes: string | null;
   message_count: number;
   last_message_at: string | null;
   created_at: string;
+  // AI Summary fields
+  ai_summary: string | null;
+  ai_summary_generated_at: string | null;
+  ai_summary_stale: boolean;
+}
+
+export interface GenerateSummaryError {
+  detail: string;
+  retry_after?: number;
+}
+
+// Convert mxc:// URL to HTTP URL
+export function mxcToHttp(mxcUrl: string | null): string | null {
+  if (!mxcUrl || !mxcUrl.startsWith("mxc://")) return null;
+  const parts = mxcUrl.replace("mxc://", "").split("/");
+  if (parts.length < 2) return null;
+  const [serverName, mediaId] = parts;
+  return `http://localhost:8008/_matrix/media/v3/download/${serverName}/${mediaId}`;
 }
 
 export interface PeopleListResponse {
@@ -133,6 +152,32 @@ export const people = {
     fetchAPI<MessageListResponse>(`/people/${id}/messages`, {
       params: { page },
     }),
+
+  generateSummary: async (id: number): Promise<PersonFull> => {
+    const response = await fetch(`${API_URL}/api/people/${id}/generate-summary`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        const error: GenerateSummaryError = await response.json();
+        throw new Error(`Rate limited. Try again in ${Math.ceil(error.retry_after || 60)} seconds.`);
+      }
+      if (response.status === 401) {
+        if (typeof window !== "undefined") {
+          window.location.href = "/login";
+        }
+      }
+      const error = await response.json().catch(() => ({ detail: "Unknown error" }));
+      throw new Error(error.detail || `API error: ${response.status}`);
+    }
+
+    return response.json();
+  },
 };
 
 // Threads
@@ -225,4 +270,65 @@ export const database = {
 
   rooms: (page?: number, page_size?: number) =>
     fetchAPI<TableResponse>("/database/rooms", { params: { page, page_size } }),
+};
+
+// Discussions (AI-detected)
+export interface DiscussionMessage {
+  id: number;
+  content: string | null;
+  timestamp: string;
+  sender: Person | null;
+  confidence: number;
+}
+
+export interface DiscussionBrief {
+  id: number;
+  title: string;
+  summary: string | null;
+  started_at: string;
+  ended_at: string;
+  message_count: number;
+  participant_count: number;
+}
+
+export interface DiscussionFull extends DiscussionBrief {
+  messages: DiscussionMessage[];
+}
+
+export interface DiscussionListResponse {
+  discussions: DiscussionBrief[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AnalysisStatus {
+  status: "none" | "running" | "completed" | "failed";
+  started_at: string | null;
+  completed_at: string | null;
+  windows_processed: number;
+  total_windows: number;
+  discussions_found: number;
+  tokens_used: number;
+  error_message: string | null;
+}
+
+export interface AnalyzeResponse {
+  message: string;
+  run_id: number;
+}
+
+export const discussions = {
+  list: (params?: { page?: number; page_size?: number }) =>
+    fetchAPI<DiscussionListResponse>("/discussions", { params }),
+
+  get: (id: number) => fetchAPI<DiscussionFull>(`/discussions/${id}`),
+
+  analyze: () =>
+    fetchAPI<AnalyzeResponse>("/discussions/analyze", {
+      method: "POST",
+    }),
+
+  analysisStatus: () => fetchAPI<AnalysisStatus>("/discussions/analysis-status"),
 };

@@ -369,9 +369,9 @@ backfill:
     # Whether to do backfilling at all.
     enabled: true
     # Maximum number of messages to backfill in empty rooms.
-    max_initial_messages: 500
+    max_initial_messages: 10000
     # Maximum number of missed messages to backfill after bridge restarts.
-    max_catchup_messages: 1000
+    max_catchup_messages: 10000
     # If a backfilled chat is older than this number of hours,
     # mark it as read even if it's unread on the remote network.
     unread_hours_threshold: 720
