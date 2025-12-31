@@ -1,19 +1,35 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { settings, type SettingsStatus } from "@/lib/api";
+import { settings, search, type SettingsStatus, type ReindexStatus } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
 
 export default function SettingsPage() {
   const [data, setData] = useState<SettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reindexStatus, setReindexStatus] = useState<ReindexStatus | null>(null);
+  const [reindexing, setReindexing] = useState(false);
+
+  const loadReindexStatus = useCallback(async () => {
+    try {
+      const status = await search.status();
+      setReindexStatus(status);
+      return status;
+    } catch (error) {
+      console.error("Failed to load reindex status:", error);
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     async function load() {
       try {
-        const result = await settings.status();
-        setData(result);
+        const [settingsResult] = await Promise.all([
+          settings.status(),
+          loadReindexStatus(),
+        ]);
+        setData(settingsResult);
       } catch (error) {
         console.error("Failed to load settings:", error);
       } finally {
@@ -21,7 +37,32 @@ export default function SettingsPage() {
       }
     }
     load();
-  }, []);
+  }, [loadReindexStatus]);
+
+  // Poll for reindex status when running
+  useEffect(() => {
+    if (reindexStatus?.status !== "running") return;
+
+    const interval = setInterval(async () => {
+      const status = await loadReindexStatus();
+      if (status?.status !== "running") {
+        setReindexing(false);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [reindexStatus?.status, loadReindexStatus]);
+
+  const handleReindex = async () => {
+    try {
+      setReindexing(true);
+      await search.reindex("all");
+      await loadReindexStatus();
+    } catch (error) {
+      console.error("Failed to start reindex:", error);
+      setReindexing(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -105,6 +146,88 @@ export default function SettingsPage() {
               </span>
             </div>
           </div>
+        </div>
+
+        {/* Semantic Search */}
+        <div className="rounded-xl border bg-card p-6">
+          <h2 className="text-lg font-semibold mb-4">Semantic Search</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Build vector embeddings for semantic search across messages, discussions, people, and topics.
+          </p>
+          
+          {reindexStatus && (
+            <div className="space-y-3 mb-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Status</span>
+                <span className="flex items-center gap-2 text-sm">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      reindexStatus.status === "running"
+                        ? "bg-yellow-500 animate-pulse"
+                        : reindexStatus.status === "completed"
+                        ? "bg-green-500"
+                        : reindexStatus.status === "failed"
+                        ? "bg-red-500"
+                        : "bg-gray-400"
+                    }`}
+                  />
+                  {reindexStatus.status === "running"
+                    ? "Indexing..."
+                    : reindexStatus.status === "completed"
+                    ? "Ready"
+                    : reindexStatus.status === "failed"
+                    ? "Failed"
+                    : "Not indexed"}
+                </span>
+              </div>
+              
+              {reindexStatus.status === "running" && reindexStatus.progress && (
+                <div className="space-y-2">
+                  {Object.entries(reindexStatus.progress).map(([type, progress]) => (
+                    <div key={type} className="space-y-1">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span className="capitalize">{type}s</span>
+                        <span>{progress.completed} / {progress.total}</span>
+                      </div>
+                      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary transition-all duration-300"
+                          style={{
+                            width: `${progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {reindexStatus.last_completed_at && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Last indexed</span>
+                  <span className="text-sm text-muted-foreground">
+                    {formatDateTime(reindexStatus.last_completed_at)}
+                  </span>
+                </div>
+              )}
+              
+              {reindexStatus.error && (
+                <p className="text-sm text-red-500">
+                  Error: {reindexStatus.error}
+                </p>
+              )}
+            </div>
+          )}
+          
+          <button
+            onClick={handleReindex}
+            disabled={reindexing || reindexStatus?.status === "running"}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {reindexing || reindexStatus?.status === "running"
+              ? "Indexing..."
+              : "Build Search Index"}
+          </button>
         </div>
 
         {/* Security */}

@@ -15,6 +15,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 from nio import AsyncClient, MatrixRoom, RoomMessageText, Event
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -262,7 +263,7 @@ class ArchiveClient:
             
             # Store message (use UTC to be consistent)
             timestamp = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
-            await store_message(
+            message_id = await store_message(
                 self.db,
                 event.event_id,
                 room_id,
@@ -274,8 +275,32 @@ class ArchiveClient:
             
             logger.info(f"Archived message from {event.sender} in {room.display_name}")
             
+            # Embed message for semantic search (fire and forget)
+            if message_id:
+                asyncio.create_task(self._embed_message(message_id))
+            
         except Exception as e:
             logger.error(f"Error archiving message: {e}")
+    
+    async def _embed_message(self, message_id: int):
+        """Embed a message for semantic search. Non-blocking, logs errors."""
+        try:
+            api_url = settings.api_url or "http://api:8000"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{api_url}/api/search/embed",
+                    params={"entity_type": "message", "entity_id": message_id},
+                    timeout=30.0
+                )
+                if response.status_code == 200:
+                    logger.debug(f"Embedded message {message_id}")
+                elif response.status_code == 503:
+                    # Embedding service not initialized, skip silently
+                    pass
+                else:
+                    logger.warning(f"Failed to embed message {message_id}: {response.status_code}")
+        except Exception as e:
+            logger.debug(f"Could not embed message {message_id}: {e}")
     
     async def run(self):
         """Run the archive client."""

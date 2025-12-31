@@ -339,10 +339,15 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         from ..db import Discussion
         from datetime import timezone
         
-        # Use current time as default if not provided (timezone-aware)
+        # Use None as default - timestamps will be set from actual message timestamps
+        # This ensures ended_at reflects the latest message, not the analysis run time
+        # Note: started_at and ended_at are nullable=False in DB, but we'll set them 
+        # when the first message is assigned. Use a placeholder for now if not provided.
         now = datetime.now(timezone.utc)
-        started_at = started_at or now
-        ended_at = ended_at or now
+        if started_at is None:
+            started_at = now  # Will be corrected when first message is assigned
+        if ended_at is None:
+            ended_at = datetime.min.replace(tzinfo=timezone.utc)  # Use min date so any message timestamp will be greater
         
         # Generate topic keywords
         topic_keywords = self._generate_topic_keywords(title, first_message_content)

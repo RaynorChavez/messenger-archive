@@ -9,3 +9,4 @@ bcrypt>=4.1.0
 python-jose[cryptography]>=3.3.0
 httpx>=0.26.0
 google-genai>=1.0.0
+pgvector>=0.3.0

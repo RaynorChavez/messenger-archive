@@ -419,6 +419,115 @@ export interface TimelineResponse {
   total: number;
 }
 
+// Semantic Search
+export type SearchScope = "all" | "messages" | "discussions" | "people" | "topics";
+export type MatchType = "hybrid" | "semantic";
+
+export interface SearchMessageResult {
+  id: number;
+  content: string;
+  sender_id: number | null;
+  sender_name: string | null;
+  sender_avatar: string | null;
+  timestamp: string;
+  score: number;
+  match_type: MatchType;
+}
+
+export interface SearchDiscussionResult {
+  id: number;
+  title: string;
+  summary: string | null;
+  started_at: string;
+  ended_at: string;
+  message_count: number;
+  score: number;
+  match_type: MatchType;
+}
+
+export interface SearchPersonResult {
+  id: number;
+  display_name: string | null;
+  avatar_url: string | null;
+  ai_summary: string | null;
+  score: number;
+  match_type: MatchType;
+}
+
+export interface SearchTopicResult {
+  id: number;
+  name: string;
+  description: string | null;
+  color: string;
+  score: number;
+  match_type: MatchType;
+}
+
+export interface SearchPaginationInfo {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
+export interface SearchResults {
+  query: string;
+  results: {
+    messages: SearchMessageResult[];
+    discussions: SearchDiscussionResult[];
+    people: SearchPersonResult[];
+    topics: SearchTopicResult[];
+  };
+  counts: {
+    messages: number;
+    discussions: number;
+    people: number;
+    topics: number;
+    total: number;
+  };
+  pagination: {
+    messages: SearchPaginationInfo;
+    discussions: SearchPaginationInfo;
+    people: SearchPaginationInfo;
+    topics: SearchPaginationInfo;
+  };
+}
+
+export interface ReindexProgress {
+  total: number;
+  completed: number;
+}
+
+export interface ReindexStatus {
+  status: "idle" | "running" | "completed" | "failed";
+  progress: Record<string, ReindexProgress> | null;
+  last_completed_at: string | null;
+  error: string | null;
+}
+
+export const search = {
+  query: (q: string, scope?: SearchScope, page?: number, pageSize?: number) =>
+    fetchAPI<SearchResults>("/search", {
+      params: { q, scope, page, page_size: pageSize },
+    }),
+
+  reindex: (scope?: SearchScope) =>
+    fetchAPI<{ message: string; scope: string }>("/search/reindex", {
+      method: "POST",
+      params: { scope },
+    }),
+
+  status: () => fetchAPI<ReindexStatus>("/search/status"),
+
+  embed: (entityType: string, entityId: number) =>
+    fetchAPI<{ message: string }>("/search/embed", {
+      method: "POST",
+      params: { entity_type: entityType, entity_id: entityId },
+    }),
+};
+
 export const discussions = {
   list: (params?: { page?: number; page_size?: number; topic_id?: number; date?: string }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),

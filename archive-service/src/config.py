@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Room name to archive (partial match, case-insensitive)
     # Leave empty to archive all rooms
     archive_room_filter: Optional[str] = "General Chat - Manila Dialectics Society"
+    
+    # API URL for embedding service
+    api_url: str = "http://api:8000"
 
 
 @lru_cache()

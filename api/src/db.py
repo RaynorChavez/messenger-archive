@@ -1,8 +1,9 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Float
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.sql import func
 from typing import Generator
+from pgvector.sqlalchemy import Vector
 
 from .config import get_settings
 
@@ -143,6 +144,22 @@ class TopicClassificationRun(Base):
     topics_created = Column(Integer, default=0)
     discussions_classified = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+
+
+class Embedding(Base):
+    """Vector embeddings for semantic search."""
+    __tablename__ = "embeddings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String(50), nullable=False)  # 'message', 'discussion', 'person', 'topic'
+    entity_id = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=True)  # SHA256 hash for change detection
+    embedding = Column(Vector(768), nullable=True)  # Gemini text-embedding-004 = 768 dimensions
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    __table_args__ = (
+        UniqueConstraint('entity_type', 'entity_id', name='uq_embedding_entity'),
+    )
 
 
 # =============================================================================

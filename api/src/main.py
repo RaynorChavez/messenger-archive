@@ -14,8 +14,10 @@ from .routers import (
     settings_router,
     database_router,
     discussions_router,
+    search_router,
 )
 from .services.ai import init_ai_service
+from .services.embeddings import init_embedding_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,7 +33,8 @@ async def lifespan(app: FastAPI):
             api_key=settings.gemini_api_key,
             max_tokens_per_minute=settings.gemini_rate_limit_tokens_per_min
         )
-        logger.info("AI service initialized")
+        init_embedding_service(api_key=settings.gemini_api_key)
+        logger.info("AI and Embedding services initialized")
     else:
         logger.warning("GEMINI_API_KEY not set - AI features disabled")
     
@@ -66,6 +69,7 @@ app.include_router(stats_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(database_router, prefix="/api")
 app.include_router(discussions_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
 
 
 @app.get("/api/health")

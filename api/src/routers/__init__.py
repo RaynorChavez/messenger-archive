@@ -6,6 +6,7 @@ from .stats import router as stats_router
 from .settings import router as settings_router
 from .database import router as database_router
 from .discussions import router as discussions_router
+from .search import router as search_router
 
 __all__ = [
     "auth_router",
@@ -16,4 +17,5 @@ __all__ = [
     "settings_router",
     "database_router",
     "discussions_router",
+    "search_router",
 ]

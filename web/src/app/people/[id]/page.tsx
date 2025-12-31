@@ -31,7 +31,7 @@ export default function PersonDetailPage() {
   // Activity chart state
   const [activity, setActivity] = useState<PersonActivityResponse | null>(null);
   const [activityPeriod, setActivityPeriod] = useState<"month" | "3months" | "6months" | "year" | "all">("6months");
-  const [activityGranularity, setActivityGranularity] = useState<"day" | "week" | "month">("week");
+  const [activityGranularity, setActivityGranularity] = useState<"day" | "week" | "month">("day");
 
   useEffect(() => {
     async function load() {

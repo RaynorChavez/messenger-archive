@@ -1,56 +1,44 @@
 # Planned Features
 
-## 1. Semantic Search Service
+## 1. Semantic Search Service ✅ DONE
 
 Full-text semantic search across the archive using vector embeddings.
 
-### Components
+### Implementation Summary
 
-#### 1.1 Embedding Service
-- Use Gemini `text-embedding-004` (768 dimensions)
-- Embed on record creation/update
-- Batch embedding job for existing records
+- **Database:** `pgvector/pgvector:pg15` image with `embeddings` table
+- **Embedding Service:** `api/src/services/embeddings.py` using Gemini `text-embedding-004` (768 dimensions)
+- **Search API:** `GET /api/search?q=<query>&scope=<scope>&limit=20` with hybrid scoring (0.5 semantic + 0.5 keyword)
+- **Reindex API:** `POST /api/search/reindex` with progress tracking
+- **Frontend:** Semantic search page with scope tabs, result cards, score bars
+- **Real-time:** New messages embedded automatically via archive-service
 
-#### 1.2 Database Setup
-- Add `pgvector` extension to PostgreSQL
-- Add embedding columns or separate embeddings table:
-  ```sql
-  CREATE EXTENSION vector;
-  
-  CREATE TABLE embeddings (
-    id SERIAL PRIMARY KEY,
-    entity_type VARCHAR(50) NOT NULL,  -- 'message', 'discussion', 'person', 'topic'
-    entity_id INTEGER NOT NULL,
-    embedding vector(768),
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(entity_type, entity_id)
-  );
-  
-  CREATE INDEX ON embeddings USING ivfflat (embedding vector_cosine_ops);
-  ```
+### Files Changed
+- `docker-compose.yml` - pgvector image
+- `scripts/init-db.sql` - embeddings table
+- `scripts/migrate-pgvector.sql` - migration for existing DBs
+- `api/requirements.txt` - pgvector package
+- `api/src/db.py` - Embedding model
+- `api/src/services/embeddings.py` - EmbeddingService
+- `api/src/routers/search.py` - Search endpoints
+- `api/src/main.py` - Init embedding service
+- `web/src/lib/api.ts` - Search types and methods
+- `web/src/app/search/page.tsx` - Semantic search UI
+- `web/src/app/settings/page.tsx` - Reindex button
+- `archive-service/src/main.py` - Embed on message store
 
-#### 1.3 What to Embed
-| Entity | Content to Embed |
-|--------|------------------|
-| Message | `content` |
-| Discussion | `title + summary` |
-| Person | `display_name + summary` |
-| Topic | `name + description` |
+### First-Time Setup
+```bash
+# Backup and migrate
+docker compose exec postgres pg_dump -U archive -d messenger_archive > backup.sql
+docker compose down
+docker compose up -d postgres
+docker compose exec postgres psql -U archive -d messenger_archive -f /docker-entrypoint-initdb.d/migrate-pgvector.sql
+docker compose up -d
 
-#### 1.4 Search API
+# Build index via Settings page or API
+curl -X POST http://localhost:8000/api/search/reindex
 ```
-GET /api/search?q=<query>&scope=<scope>&limit=20
-
-scope: all | messages | discussions | people | topics
-```
-
-Returns ranked results with similarity scores, grouped by entity type when `scope=all`.
-
-#### 1.5 Frontend
-- Search bar in header (global)
-- Scope selector dropdown
-- Results page with tabs per entity type
-- Highlight matching content
 
 ---
 
@@ -389,37 +377,26 @@ ALTER TABLE discussion_analysis_runs ADD COLUMN
 
 ## 7. Bug Fixes
 
-### 7.1 Discussion `ended_at` Uses Current Time Instead of Message Timestamp
+### 7.1 Discussion `ended_at` Uses Current Time Instead of Message Timestamp ✅ FIXED
 
 **Priority:** High
 
 **Problem:**
 When discussions are created, `started_at` and `ended_at` default to `datetime.now()`. The code attempts to update these based on message timestamps, but `ended_at` is incorrectly showing the analysis run date (Dec 30) for all discussions instead of the actual latest message date.
 
-**Expected behavior:**
-- `started_at` = timestamp of the earliest message in the discussion
-- `ended_at` = timestamp of the latest message in the discussion
+**Root cause:** When `ended_at` defaults to `datetime.now()` (today's date), the comparison `msg.timestamp > disc.ended_at` is always false for historical messages, so `ended_at` never gets updated.
 
-**Current behavior:**
-- `ended_at` = date the analysis was run (today), regardless of actual message dates
+**Fix applied:** Changed default `ended_at` to `datetime.min` (with timezone) so any message timestamp will be greater and trigger the update. Location: `api/src/services/discussions.py:344`
 
-**Location:** `api/src/services/discussions.py` - `_create_discussion_in_db()` and message assignment logic
+**Note:** Existing discussions need re-analysis to fix their `ended_at` values.
 
-**Fix needed:**
-- Ensure `ended_at` is properly updated from message timestamps
-- Check if the timestamp update is being committed to DB
-- May need to recalculate dates after all messages are assigned
-
-### 7.2 Profile Activity Chart Default Granularity
+### 7.2 Profile Activity Chart Default Granularity ✅ FIXED
 
 **Priority:** Low
 
 **Problem:** Activity chart defaults to "weekly" granularity, which shows only 3 data points for recent data.
 
-**Fix:** Change default from `"week"` to `"day"` in `web/src/app/people/[id]/page.tsx`:
-```tsx
-const [activityGranularity, setActivityGranularity] = useState<"day" | "week" | "month">("day");
-```
+**Fix applied:** Changed default from `"week"` to `"day"` in `web/src/app/people/[id]/page.tsx:34`
 
 ### 7.3 Discussion Analysis Assigns Unrelated Messages with High Confidence
 
@@ -522,29 +499,81 @@ def _validate_classifications(self, classifications: List, current_window: int):
 
 ---
 
+## 8. Discussion Page Enhancements ✅ DONE
+
+### 8.1 Virtualized Infinite Scroll ✅
+- Implemented `@tanstack/react-virtual` for efficient rendering
+- Only renders visible discussion cards
+- Loads more as user scrolls (50 per page)
+
+### 8.2 Timeline API Endpoint ✅
+- `GET /api/discussions/timeline` returns date counts for full timeline
+- Timeline loads all dates upfront, discussions load paginated
+- Supports topic_id filter
+
+### 8.3 Date Filtering ✅
+- `GET /api/discussions?date=YYYY-MM-DD` filters by date
+- Clicking timeline bead fetches discussions for that date
+- Works with topic filter
+
+### 8.4 Discussion Context Expansion ✅
+- "Show earlier messages" / "Show later messages" buttons
+- `GET /api/discussions/{id}/context?position=before|after&limit=5`
+- Shows messages before/after discussion with visual separator
+
+### 8.5 In-Thread Gap Expansion ✅
+- Detects gaps between discussion messages where other messages occurred
+- "Show N hidden messages" buttons between messages
+- `GET /api/discussions/{id}/gaps` returns gap info
+- `GET /api/discussions/{id}/gap-messages` returns messages in a gap
+- Similar to GitHub PR diff "show more context" feature
+
+---
+
 ## Implementation Order
 
 Recommended sequence:
 
-1. **Bug Fix: Discussion dates** (quick fix)
-   - Fix `ended_at` to use actual message timestamps
+1. **Bug Fix: Discussion dates** ✅ DONE
+   - Fixed `ended_at` to use actual message timestamps
 
 2. **Incremental Discussion Analysis** (cost savings - high priority)
    - Essential for sustainable ongoing analysis
    - Should implement before running more full analyses
 
-3. **Semantic Search** (foundation)
-   - Embeddings will be reused for Virtual Chat (finding relevant context)
-   - Useful standalone feature
+3. **Semantic Search** ✅ DONE
+   - Hybrid search (semantic + keyword) with 0.5 alpha
+   - Embeddings for messages, discussions, people, topics
+   - Real-time embedding for new messages
 
 4. **Enhanced Profile Summaries** (quick win)
    - Relatively small change to existing code
    - Improves data quality for Virtual Chat personas
 
-5. **Profile Activity Charts** (quick win) ✅ DONE
+5. **Profile Activity Charts** ✅ DONE
    - Simple SQL aggregation + chart component
    - Nice visual addition to profile pages
 
-6. **Virtual Chat** (capstone)
-   - Depends on good profile summaries
-   - Can use semantic search to find relevant messages for context
+6. **Dashboard Avatars** ✅ DONE
+   - Added avatars to recent activity feed
+   - mxc:// to HTTP URL conversion
+
+7. **Database Page Tables** ✅ DONE
+   - Added discussions, discussion_messages, topics, discussion_topics tables
+
+8. **Bug Fix: Discussion Classification** ✅ DONE
+   - Improved prompt with clearer topic relevance rules
+   - Auto-dormancy after 5 windows of inactivity
+   - Topic keywords generated when creating discussions
+   - Validation logging for suspicious assignments
+
+9. **Discussion Page Enhancements** ✅ DONE
+   - Virtualized infinite scroll
+   - Full timeline from API
+   - Date filtering
+   - Context expansion (before/after)
+   - In-thread gap expansion
+
+10. **Virtual Chat** (capstone)
+    - Depends on good profile summaries
+    - Can use semantic search to find relevant messages for context

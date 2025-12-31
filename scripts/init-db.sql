@@ -56,6 +56,29 @@ CREATE INDEX IF NOT EXISTS idx_messages_content_search
 ON messages USING gin(to_tsvector('english', coalesce(content, '')));
 
 -- -----------------------------------------------------------------------------
+-- Vector Embeddings (Semantic Search)
+-- -----------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    id SERIAL PRIMARY KEY,
+    entity_type VARCHAR(50) NOT NULL,  -- 'message', 'discussion', 'person', 'topic'
+    entity_id INTEGER NOT NULL,
+    content_hash VARCHAR(64),          -- SHA256 hash for change detection
+    embedding vector(768),             -- Gemini text-embedding-004 = 768 dimensions
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(entity_type, entity_id)
+);
+
+-- Index for vector similarity search (IVFFlat)
+CREATE INDEX IF NOT EXISTS idx_embeddings_vector 
+ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Index for entity lookups
+CREATE INDEX IF NOT EXISTS idx_embeddings_entity 
+ON embeddings (entity_type, entity_id);
+
+-- -----------------------------------------------------------------------------
 -- Updated at trigger
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION update_updated_at_column()

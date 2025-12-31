@@ -1,19 +1,21 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, useDeferredValue } from "react";
 import Link from "next/link";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppLayout } from "@/components/layout/app-layout";
 import {
   discussions,
+  search,
   type DiscussionBrief,
   type AnalysisStatus,
   type TopicBrief,
   type TopicClassificationStatus,
   type TimelineEntry,
+  type SearchDiscussionResult,
 } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
-import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag } from "lucide-react";
+import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag, Search, X } from "lucide-react";
 
 function TopicPill({ topic, selected, onClick }: { topic: TopicBrief | null; selected: boolean; onClick: () => void }) {
   const isAll = topic === null;
@@ -81,6 +83,12 @@ export default function DiscussionsPage() {
   
   // Timeline state (fetched separately for full view)
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchDiscussionResult[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   // Virtualization
   const parentRef = useRef<HTMLDivElement>(null);
@@ -172,10 +180,41 @@ export default function DiscussionsPage() {
 
   // Reload discussions when topic or date filter changes
   useEffect(() => {
-    if (!loading) {
+    if (!loading && !searchQuery) {
       loadDiscussions(selectedTopicId, selectedDate);
     }
-  }, [selectedTopicId, selectedDate, loadDiscussions, loading]);
+  }, [selectedTopicId, selectedDate, loadDiscussions, loading, searchQuery]);
+
+  // Search effect with debounce via useDeferredValue
+  useEffect(() => {
+    if (!deferredSearchQuery.trim()) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+
+    const performSearch = async () => {
+      setIsSearching(true);
+      try {
+        const result = await search.query(deferredSearchQuery, "discussions", 1, 50);
+        // Filter by topic if selected
+        let filtered = result.results.discussions;
+        if (selectedTopicId !== null) {
+          // We need to fetch full discussion data to filter by topic
+          // For now, just show all search results when searching
+          // The user can clear the topic filter if needed
+        }
+        setSearchResults(filtered);
+      } catch (err) {
+        console.error("Search failed:", err);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+
+    performSearch();
+  }, [deferredSearchQuery, selectedTopicId]);
 
   // Reload timeline when topic filter changes (not date - timeline shows all dates)
   useEffect(() => {
@@ -414,6 +453,38 @@ export default function DiscussionsPage() {
           </div>
         )}
 
+        {/* Search bar */}
+        <div className="flex-shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search discussions or participants..."
+              className="w-full pl-10 pr-10 py-2 rounded-lg border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+            {isSearching && (
+              <div className="absolute right-10 top-1/2 -translate-y-1/2">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            )}
+          </div>
+          {searchResults !== null && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} for "{deferredSearchQuery}"
+            </p>
+          )}
+        </div>
+
         {/* Main content with timeline */}
         <div className="flex gap-6 flex-1 min-h-0">
           {/* Timeline sidebar */}
@@ -475,12 +546,62 @@ export default function DiscussionsPage() {
             </div>
           )}
 
-          {/* Discussions list - virtualized */}
+          {/* Discussions list - virtualized for browsing, simple list for search */}
           <div 
             ref={parentRef}
             className="flex-1 overflow-auto"
           >
-            {data.length > 0 ? (
+            {searchResults !== null ? (
+              // Search results mode
+              searchResults.length > 0 ? (
+                <div className="space-y-4">
+                  {searchResults.map((result) => (
+                    <Link
+                      key={result.id}
+                      href={`/discussions/${result.id}`}
+                      className="block rounded-xl border bg-card p-4 hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium">{result.title}</h3>
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${
+                              result.match_type === "hybrid" 
+                                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+                            }`}>
+                              {Math.round(result.score * 100)}%
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              {result.message_count} messages
+                            </span>
+                            <span>
+                              {formatRelativeTime(result.started_at)}
+                            </span>
+                          </div>
+                          {result.summary && (
+                            <p className="mt-2 text-sm text-muted-foreground">
+                              {truncate(result.summary, 200)}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Search className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
+                  <p className="text-muted-foreground">
+                    No discussions found for "{deferredSearchQuery}"
+                  </p>
+                </div>
+              )
+            ) : data.length > 0 ? (
+              // Regular browsing mode with virtualization
               <div
                 style={{
                   height: `${rowVirtualizer.getTotalSize()}px`,
@@ -550,7 +671,7 @@ export default function DiscussionsPage() {
               )
             )}
             
-            {loadingMore && (
+            {!searchResults && loadingMore && (
               <div className="flex justify-center py-4">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
@@ -558,7 +679,7 @@ export default function DiscussionsPage() {
           </div>
         </div>
 
-        {total > data.length && !loadingMore && (
+        {!searchResults && total > data.length && !loadingMore && (
           <p className="text-sm text-muted-foreground text-center">
             Loaded {data.length} of {total} discussions
           </p>
