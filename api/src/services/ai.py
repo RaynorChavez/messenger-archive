@@ -91,6 +91,26 @@ Note: Ignore any "[message edited]" indicators or edit history - focus only on t
 
 Messages (with timestamps):
 {messages}"""
+
+    # Enhanced prompt with conversation context
+    PROMPT_TEMPLATE_WITH_CONTEXT = """Analyze the following messages from {person_name} in a philosophy discussion group called "Manila Dialectics Society". Each of their messages is shown with surrounding conversation context (messages before and after from other participants).
+
+Generate a brief personality profile (2-3 paragraphs) covering:
+
+- Communication style and tone
+- Topics and themes they engage with most (philosophical or otherwise)
+- How they respond to and interact with others
+- Notable perspectives or recurring ideas
+- Any other interesting patterns
+
+IMPORTANT: Focus ONLY on {person_name}'s messages and behavior. The context messages from others are provided only to help you understand what {person_name} is responding to or what conversations they initiate. Do not profile the other participants.
+
+Keep it objective and insightful. Do not use bullet points in your response - write in prose.
+
+Note: Ignore any "[message edited]" indicators or edit history - focus only on the actual content of what they said.
+
+Messages with context:
+{messages}"""
     
     def __init__(self, api_key: str, max_tokens_per_minute: int = 800_000):
         """Initialize the AI service.
@@ -123,6 +143,59 @@ Messages (with timestamps):
                 content = content[:500] + "..."
             lines.append(f"[{ts_str}] {content}")
         return "\n".join(lines)
+    
+    def _format_messages_with_context(
+        self, 
+        messages_with_context: list[dict],
+        person_name: str
+    ) -> str:
+        """Format messages with conversation context for the prompt.
+        
+        Args:
+            messages_with_context: List of dicts with keys:
+                - timestamp: datetime
+                - content: str
+                - sender_name: str
+                - is_target: bool (True if this is the person we're profiling)
+                - context_before: list of (timestamp, sender_name, content)
+                - context_after: list of (timestamp, sender_name, content)
+            person_name: Name of the person being profiled
+            
+        Returns:
+            Formatted string of messages with context
+        """
+        sections = []
+        
+        for i, msg in enumerate(messages_with_context):
+            lines = []
+            lines.append(f"--- Message {i+1} ---")
+            
+            # Context before
+            if msg.get("context_before"):
+                lines.append("  [Context before:]")
+                for ts, sender, content in msg["context_before"]:
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M")
+                    content_short = content[:300] + "..." if len(content) > 300 else content
+                    lines.append(f"    [{ts_str}] {sender}: {content_short}")
+            
+            # The target person's message
+            ts_str = msg["timestamp"].strftime("%Y-%m-%d %H:%M")
+            content = msg["content"]
+            if len(content) > 500:
+                content = content[:500] + "..."
+            lines.append(f"  >>> [{ts_str}] {person_name}: {content}")
+            
+            # Context after
+            if msg.get("context_after"):
+                lines.append("  [Context after:]")
+                for ts, sender, content in msg["context_after"]:
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M")
+                    content_short = content[:300] + "..." if len(content) > 300 else content
+                    lines.append(f"    [{ts_str}] {sender}: {content_short}")
+            
+            sections.append("\n".join(lines))
+        
+        return "\n\n".join(sections)
     
     async def generate_profile_summary(
         self,
@@ -199,6 +272,84 @@ Messages (with timestamps):
                 
         except Exception as e:
             logger.error(f"Error generating profile summary for {person_name}: {e}")
+            raise
+
+    async def generate_profile_summary_with_context(
+        self,
+        person_name: str,
+        messages_with_context: list[dict]
+    ) -> str:
+        """Generate a profile summary from a person's messages with conversation context.
+        
+        Args:
+            person_name: Display name of the person
+            messages_with_context: List of dicts containing the person's messages
+                with context_before and context_after
+            
+        Returns:
+            Generated profile summary text
+            
+        Raises:
+            RateLimitExceeded: If rate limit would be exceeded
+            Exception: If AI generation fails
+        """
+        if not messages_with_context:
+            return "No messages available to generate a summary."
+        
+        # Format messages with context
+        formatted_messages = self._format_messages_with_context(messages_with_context, person_name)
+        
+        # Build prompt
+        prompt = self.PROMPT_TEMPLATE_WITH_CONTEXT.format(
+            person_name=person_name,
+            messages=formatted_messages
+        )
+        
+        # Estimate tokens (input + estimated output)
+        estimated_input_tokens = self._estimate_tokens(prompt)
+        estimated_output_tokens = 500  # Rough estimate for 2-3 paragraphs
+        estimated_total = estimated_input_tokens + estimated_output_tokens
+        
+        # Check rate limit
+        if not self.rate_limiter.can_use(estimated_total):
+            retry_after = self.rate_limiter.time_until_available(estimated_total)
+            raise RateLimitExceeded(retry_after)
+        
+        logger.info(f"Generating profile summary with context for {person_name} ({len(messages_with_context)} messages, ~{estimated_input_tokens} tokens)")
+        
+        try:
+            # Call Gemini API with thinking budget
+            response = self.client.models.generate_content(
+                model=self.MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=4096,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=self.THINKING_BUDGET
+                    )
+                )
+            )
+            
+            # Record actual usage (use estimate if not available)
+            actual_tokens = estimated_total
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                actual_tokens = (
+                    getattr(response.usage_metadata, 'prompt_token_count', 0) +
+                    getattr(response.usage_metadata, 'candidates_token_count', 0)
+                )
+            
+            self.rate_limiter.record_usage(actual_tokens)
+            
+            # Extract text from response
+            if response.text:
+                return response.text.strip()
+            else:
+                logger.warning(f"Empty response from Gemini for {person_name}")
+                return "Unable to generate summary at this time."
+                
+        except Exception as e:
+            logger.error(f"Error generating profile summary with context for {person_name}: {e}")
             raise
 
 

@@ -7,6 +7,7 @@ into thematic discussions.
 
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -788,7 +789,7 @@ Output JSON with topics and assignments.'''
                     response_mime_type="application/json",
                     response_schema=self.TOPIC_CLASSIFICATION_SCHEMA,
                     temperature=1.0,
-                    max_output_tokens=4096,
+                    max_output_tokens=16384,  # Increased for large discussion lists
                     thinking_config=types.ThinkingConfig(thinking_budget=self.THINKING_BUDGET),
                 )
             )
@@ -796,7 +797,28 @@ Output JSON with topics and assignments.'''
             if not response.text:
                 raise ValueError("Empty response from AI")
             
-            data = json.loads(response.text)
+            # Try to parse JSON, with repair attempts if it fails
+            response_text = response.text
+            try:
+                data = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parse failed, attempting repair: {e}")
+                # Try to repair common issues
+                # 1. Remove trailing commas before } or ]
+                repaired = re.sub(r',(\s*[}\]])', r'\1', response_text)
+                # 2. Try to truncate at last complete object if response was cut off
+                if '"assignments"' in repaired:
+                    # Find the last complete assignment object
+                    last_good = repaired.rfind('}]')
+                    if last_good > 0:
+                        repaired = repaired[:last_good + 2] + '}'
+                try:
+                    data = json.loads(repaired)
+                    logger.info("JSON repair successful")
+                except json.JSONDecodeError:
+                    # If still failing, re-raise original error
+                    raise e
+            
             ai_response = TopicClassificationAIResponse(**data)
             
             # Clear existing discussion-topic links

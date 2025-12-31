@@ -6,12 +6,21 @@ Full-text semantic search across the archive using vector embeddings.
 
 ### Implementation Summary
 
-- **Database:** `pgvector/pgvector:pg15` image with `embeddings` table
+- **Database:** `pgvector/pgvector:pg15` image with `embeddings` table, HNSW index
 - **Embedding Service:** `api/src/services/embeddings.py` using Gemini `text-embedding-004` (768 dimensions)
-- **Search API:** `GET /api/search?q=<query>&scope=<scope>&limit=20` with hybrid scoring (0.5 semantic + 0.5 keyword)
+- **Search API:** `GET /api/search?q=<query>&scope=<scope>&page=1&page_size=20` with hybrid scoring (0.5 semantic + 0.5 keyword)
 - **Reindex API:** `POST /api/search/reindex` with progress tracking
 - **Frontend:** Semantic search page with scope tabs, result cards, score bars
 - **Real-time:** New messages embedded automatically via archive-service
+
+### Additional Features (Dec 31, 2024)
+- **Search in navbar** - Added to sidebar navigation
+- **Pagination** - Full pagination support with page/page_size params
+- **Collapsible sections** - Result sections collapse/expand, first with results expanded by default
+- **Discussions page search** - Search bar with search-as-you-type (debounced via `useDeferredValue`)
+- **Participant-based search** - Searching a person's name finds discussions they participated in:
+  - Keyword scoring includes participant names (0.8 score)
+  - Semantic search finds people, then maps to their discussions (0.85 factor for indirect match)
 
 ### Files Changed
 - `docker-compose.yml` - pgvector image
@@ -20,11 +29,13 @@ Full-text semantic search across the archive using vector embeddings.
 - `api/requirements.txt` - pgvector package
 - `api/src/db.py` - Embedding model
 - `api/src/services/embeddings.py` - EmbeddingService
-- `api/src/routers/search.py` - Search endpoints
+- `api/src/routers/search.py` - Search endpoints with pagination + participant search
 - `api/src/main.py` - Init embedding service
 - `web/src/lib/api.ts` - Search types and methods
-- `web/src/app/search/page.tsx` - Semantic search UI
+- `web/src/app/search/page.tsx` - Semantic search UI with collapsible sections
 - `web/src/app/settings/page.tsx` - Reindex button
+- `web/src/app/discussions/page.tsx` - Search bar with search-as-you-type
+- `web/src/components/layout/sidebar.tsx` - Search link in navigation
 - `archive-service/src/main.py` - Embed on message store
 
 ### First-Time Setup
@@ -545,6 +556,9 @@ Recommended sequence:
    - Hybrid search (semantic + keyword) with 0.5 alpha
    - Embeddings for messages, discussions, people, topics
    - Real-time embedding for new messages
+   - Search in navbar + discussions page search-as-you-type
+   - Participant-based discussion search
+   - Collapsible result sections, pagination support
 
 4. **Enhanced Profile Summaries** (quick win)
    - Relatively small change to existing code

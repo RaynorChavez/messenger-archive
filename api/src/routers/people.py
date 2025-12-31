@@ -198,20 +198,49 @@ async def get_person_messages(
     )
 
 
+def _get_context_messages(db: Session, message_id: int, message_timestamp: datetime, count: int = 5, direction: str = "before"):
+    """Get context messages before or after a given message."""
+    if direction == "before":
+        context = (
+            db.query(Message.timestamp, Message.content, Person.display_name)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.timestamp < message_timestamp)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(desc(Message.timestamp))
+            .limit(count)
+            .all()
+        )
+        # Reverse to chronological order
+        return [(m.timestamp, m.display_name or "Unknown", m.content) for m in reversed(context)]
+    else:
+        context = (
+            db.query(Message.timestamp, Message.content, Person.display_name)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.timestamp > message_timestamp)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(asc(Message.timestamp))
+            .limit(count)
+            .all()
+        )
+        return [(m.timestamp, m.display_name or "Unknown", m.content) for m in context]
+
+
 @router.post("/{person_id}/generate-summary", response_model=PersonResponse)
 async def generate_person_summary(
     person_id: int,
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Generate AI summary for a person based on their messages."""
+    """Generate AI summary for a person based on their messages with conversation context."""
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
     
     # Fetch ALL messages from this person, ordered by timestamp
     messages = (
-        db.query(Message.timestamp, Message.content)
+        db.query(Message.id, Message.timestamp, Message.content)
         .filter(Message.sender_id == person_id)
         .filter(Message.content.isnot(None))
         .filter(Message.content != "")
@@ -222,14 +251,26 @@ async def generate_person_summary(
     if not messages:
         raise HTTPException(status_code=400, detail="No messages found for this person")
     
-    # Format messages as list of (timestamp, content) tuples
-    message_tuples = [(msg.timestamp, msg.content) for msg in messages]
+    # Build messages with context (5 before and 5 after each message)
+    messages_with_context = []
+    for msg in messages:
+        context_before = _get_context_messages(db, msg.id, msg.timestamp, count=5, direction="before")
+        context_after = _get_context_messages(db, msg.id, msg.timestamp, count=5, direction="after")
+        
+        messages_with_context.append({
+            "timestamp": msg.timestamp,
+            "content": msg.content,
+            "sender_name": person.display_name or "Unknown",
+            "is_target": True,
+            "context_before": context_before,
+            "context_after": context_after,
+        })
     
     try:
         ai_service = get_ai_service()
-        summary = await ai_service.generate_profile_summary(
+        summary = await ai_service.generate_profile_summary_with_context(
             person_name=person.display_name or "Unknown",
-            messages=message_tuples
+            messages_with_context=messages_with_context
         )
         
         # Update person record
