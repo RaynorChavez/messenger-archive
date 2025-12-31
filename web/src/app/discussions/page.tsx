@@ -9,13 +9,14 @@ import {
   search,
   type DiscussionBrief,
   type AnalysisStatus,
+  type AnalysisPreview,
   type TopicBrief,
   type TopicClassificationStatus,
   type TimelineEntry,
   type SearchDiscussionResult,
 } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
-import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag, Search, X } from "lucide-react";
+import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag, Search, X, RefreshCw, ChevronDown } from "lucide-react";
 
 function TopicPill({ topic, selected, onClick }: { topic: TopicBrief | null; selected: boolean; onClick: () => void }) {
   const isAll = topic === null;
@@ -83,6 +84,10 @@ export default function DiscussionsPage() {
   
   // Timeline state (fetched separately for full view)
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  
+  // Analysis preview state
+  const [analysisPreview, setAnalysisPreview] = useState<AnalysisPreview | null>(null);
+  const [showAnalysisMenu, setShowAnalysisMenu] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -92,6 +97,24 @@ export default function DiscussionsPage() {
 
   // Virtualization
   const parentRef = useRef<HTMLDivElement>(null);
+  const analysisMenuRef = useRef<HTMLDivElement>(null);
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (analysisMenuRef.current && !analysisMenuRef.current.contains(event.target as Node)) {
+        setShowAnalysisMenu(false);
+      }
+    };
+    
+    if (showAnalysisMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showAnalysisMenu]);
 
   const loadDiscussions = useCallback(async (topicId?: number | null, date?: string | null, page: number = 1, append: boolean = false) => {
     try {
@@ -150,6 +173,17 @@ export default function DiscussionsPage() {
     }
   }, []);
 
+  const loadAnalysisPreview = useCallback(async () => {
+    try {
+      const preview = await discussions.analysisPreview();
+      setAnalysisPreview(preview);
+      return preview;
+    } catch (err) {
+      console.error("Failed to load analysis preview:", err);
+      return null;
+    }
+  }, []);
+
   const loadTimeline = useCallback(async (topicId?: number | null) => {
     try {
       const params: { topic_id?: number } = {};
@@ -171,12 +205,13 @@ export default function DiscussionsPage() {
         loadTimeline(),
         loadStatus(),
         loadTopics(),
-        loadTopicClassificationStatus()
+        loadTopicClassificationStatus(),
+        loadAnalysisPreview()
       ]);
       setLoading(false);
     }
     load();
-  }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus]);
+  }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus, loadAnalysisPreview]);
 
   // Reload discussions when topic or date filter changes
   useEffect(() => {
@@ -228,15 +263,19 @@ export default function DiscussionsPage() {
     if (analysisStatus?.status !== "running") return;
 
     const interval = setInterval(async () => {
+      const status = await loadStatus();
       await Promise.all([
-        loadStatus(),
         loadDiscussions(selectedTopicId, selectedDate),
         loadTimeline(selectedTopicId),
       ]);
+      // Reload preview when analysis completes
+      if (status?.status === "completed") {
+        loadAnalysisPreview();
+      }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId, selectedDate]);
+  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId, selectedDate, loadAnalysisPreview]);
 
   // Poll for topic classification status
   useEffect(() => {
@@ -252,11 +291,12 @@ export default function DiscussionsPage() {
     return () => clearInterval(interval);
   }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId, selectedDate]);
 
-  const handleStartAnalysis = async () => {
+  const handleStartAnalysis = async (mode: "incremental" | "full" = "incremental") => {
     setStartingAnalysis(true);
     setError(null);
+    setShowAnalysisMenu(false);
     try {
-      await discussions.analyze();
+      await discussions.analyze(mode);
       await loadStatus();
     } catch (err) {
       console.error("Failed to start analysis:", err);
@@ -338,18 +378,72 @@ export default function DiscussionsPage() {
             <h1 className="text-2xl font-bold">Discussions</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleStartAnalysis}
-              disabled={startingAnalysis || isRunning}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {startingAnalysis || isRunning ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4" />
+            {/* Analysis button with dropdown for full re-analysis */}
+            <div className="relative" ref={analysisMenuRef}>
+              <div className="flex">
+                <button
+                  onClick={() => handleStartAnalysis(analysisPreview?.incremental_available ? "incremental" : "full")}
+                  disabled={startingAnalysis || isRunning || (analysisPreview?.incremental_available && analysisPreview.new_messages === 0)}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-l-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {startingAnalysis || isRunning ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  {isRunning 
+                    ? `Analyzing${analysisStatus?.mode === "incremental" ? " (incremental)" : ""}...` 
+                    : analysisPreview?.incremental_available 
+                      ? analysisPreview.new_messages > 0 
+                        ? `Analyze (${analysisPreview.new_messages} new)`
+                        : "Up to date"
+                      : "Analyze All"
+                  }
+                </button>
+                <button
+                  onClick={() => setShowAnalysisMenu(!showAnalysisMenu)}
+                  disabled={startingAnalysis || isRunning}
+                  className="inline-flex items-center px-2 py-2 bg-primary text-primary-foreground rounded-r-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed border-l border-primary-foreground/20"
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+              </div>
+              
+              {/* Dropdown menu */}
+              {showAnalysisMenu && (
+                <div className="absolute right-0 mt-1 w-56 bg-card border rounded-lg shadow-lg z-50">
+                  <div className="p-1">
+                    {analysisPreview?.incremental_available && analysisPreview.new_messages > 0 && (
+                      <button
+                        onClick={() => handleStartAnalysis("incremental")}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-md flex items-center gap-2"
+                      >
+                        <Play className="h-4 w-4" />
+                        <div>
+                          <div className="font-medium">Incremental</div>
+                          <div className="text-xs text-muted-foreground">
+                            {analysisPreview.new_messages} new messages + {analysisPreview.context_messages} context
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleStartAnalysis("full")}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-md flex items-center gap-2"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                      <div>
+                        <div className="font-medium">Full Re-analysis</div>
+                        <div className="text-xs text-muted-foreground">
+                          Re-analyze all {analysisPreview?.total_messages.toLocaleString()} messages
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
               )}
-              {isRunning ? "Analyzing..." : "Analyze"}
-            </button>
+            </div>
+            
             <button
               onClick={handleStartClassification}
               disabled={startingClassification || isClassifying || data.length === 0}
@@ -369,12 +463,24 @@ export default function DiscussionsPage() {
         {isRunning && (
           <div className="space-y-1 flex-shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Analysis: {analysisStatus.windows_processed} / {analysisStatus.total_windows} windows</span>
+              <span>
+                {analysisStatus.mode === "incremental" 
+                  ? `Incremental: ${analysisStatus.windows_processed} / ${analysisStatus.total_windows} windows`
+                  : `Analysis: ${analysisStatus.windows_processed} / ${analysisStatus.total_windows} windows`
+                }
+                {analysisStatus.mode === "incremental" && analysisStatus.new_messages_count !== null && (
+                  <span className="ml-2 text-muted-foreground/70">
+                    ({analysisStatus.new_messages_count} new + {analysisStatus.context_messages_count} context)
+                  </span>
+                )}
+              </span>
               <span>{analysisStatus.discussions_found} discussions</span>
             </div>
             <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
               <div
-                className="h-full bg-green-700 rounded-full transition-all duration-300"
+                className={`h-full rounded-full transition-all duration-300 ${
+                  analysisStatus.mode === "incremental" ? "bg-blue-600" : "bg-green-700"
+                }`}
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -447,8 +553,11 @@ export default function DiscussionsPage() {
         {analysisStatus?.status === "completed" && analysisStatus.completed_at && !isRunning && (
           <div className="rounded-lg border p-3 bg-muted/50">
             <p className="text-sm text-muted-foreground">
-              Last analysis: {formatRelativeTime(analysisStatus.completed_at)} - 
+              Last analysis ({analysisStatus.mode || "full"}): {formatRelativeTime(analysisStatus.completed_at)} - 
               Found {analysisStatus.discussions_found} discussions using {analysisStatus.tokens_used.toLocaleString()} tokens
+              {analysisStatus.mode === "incremental" && analysisStatus.new_messages_count !== null && (
+                <span> ({analysisStatus.new_messages_count} new messages processed)</span>
+              )}
             </p>
           </div>
         )}

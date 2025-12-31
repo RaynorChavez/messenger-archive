@@ -11,6 +11,7 @@ from ..auth import get_current_session
 from ..schemas.person import PersonResponse, PersonListResponse, PersonUpdate
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
 from ..services.ai import get_ai_service, RateLimitExceeded
+from ..services.virtual_chat import get_persona_cache
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,9 @@ async def update_person(
     
     db.commit()
     db.refresh(person)
+    
+    # Invalidate persona cache so virtual chat picks up new notes
+    get_persona_cache().invalidate(person_id)
     
     # Get message stats
     stats = (
@@ -279,6 +283,9 @@ async def generate_person_summary(
         person.ai_summary_message_count = len(messages)
         db.commit()
         db.refresh(person)
+        
+        # Invalidate persona cache since profile changed
+        get_persona_cache().invalidate(person_id)
         
         logger.info(f"Generated AI summary for person {person_id} ({person.display_name})")
         

@@ -53,9 +53,20 @@ curl -X POST http://localhost:8000/api/search/reindex
 
 ---
 
-## 2. Virtual Chat
+## 2. Virtual Chat ✅ DONE
 
 AI-powered group chat where Gemini agents roleplay as archived people based on their documented messages and chat style.
+
+### Implementation Summary (Dec 31, 2024)
+
+- **Database:** 3 tables - `virtual_conversations`, `virtual_participants`, `virtual_messages`
+- **Backend Service:** `api/src/services/virtual_chat.py` with PersonaBuilder and VirtualChatService
+- **API:** SSE streaming endpoint `POST /api/virtual-chat/conversations/{id}/message`
+- **Frontend:** `/virtual-chat` page with participant selector, chat UI, @mention autocomplete, thinking indicators
+- **Profile Integration:** "Virtual Chat" button on person profile pages for 1:1 chats
+- **Persona Context:** Full message history with 3 before/after context messages (deduplicated)
+- **Caching:** In-memory persona cache with invalidation on profile summary regeneration
+- **Implicit Gemini Caching:** Consistent prompt prefix structure enables automatic caching
 
 ### Components
 
@@ -137,57 +148,49 @@ response = client.models.generate_content(
 
 ---
 
-## 3. Enhanced Profile Summaries
+## 3. Enhanced Profile Summaries ✅ DONE
 
-Improve profile summaries by including discussion context and reply chains.
+Improve profile summaries by including conversation context around each message.
 
-### Current State
-- Summaries are generated from raw messages only
-- No context about what discussion the message was part of
-- No context about what they were replying to
+### Implementation (Dec 31, 2024)
 
-### Enhancements
+Instead of joining through discussions, we fetch 5 messages before and 5 after each of the person's messages. This provides natural conversation context showing what they're responding to and how others react.
 
-#### 3.1 Include Discussion Context
-When fetching messages for summary generation:
-```python
-messages_with_context = db.query(
-  Message, Discussion.title, Discussion.summary
-).outerjoin(
-  DiscussionMessage, Message.id == DiscussionMessage.message_id
-).outerjoin(
-  Discussion, DiscussionMessage.discussion_id == Discussion.id
-).filter(Message.sender_id == person_id)
+#### Changes Made
+
+**`api/src/services/ai.py`:**
+- Added `PROMPT_TEMPLATE_WITH_CONTEXT` - instructs AI to focus ONLY on the target person, using context just to understand their interactions
+- Added `_format_messages_with_context()` - formats messages with clear context structure
+- Added `generate_profile_summary_with_context()` - new method using contextual prompt
+
+**`api/src/routers/people.py`:**
+- Added `_get_context_messages()` helper - fetches N messages before/after a timestamp
+- Updated `generate_person_summary` endpoint to build messages with context
+
+#### Format Sent to AI
+```
+--- Message 1 ---
+  [Context before:]
+    [2025-01-01 10:00] Alice: What do you think about...
+    [2025-01-01 10:01] Bob: I believe that...
+  >>> [2025-01-01 10:02] TargetPerson: Their actual message here
+  [Context after:]
+    [2025-01-01 10:03] Alice: That's interesting because...
+    [2025-01-01 10:04] Charlie: I agree with...
+
+--- Message 2 ---
+  ...
 ```
 
-Format for prompt:
-```
-[2025-12-30 in "Buddhist Philosophy vs Clinical Psychology"]
-User: "It is the western trend to experience the bliss of Buddhist meditation..."
-```
+#### Prompt Focus
+The prompt explicitly states:
+> "Focus ONLY on {person_name}'s messages and behavior. The context messages from others are provided only to help you understand what {person_name} is responding to or what conversations they initiate. Do not profile the other participants."
 
-#### 3.2 Include Reply Context
-When a message is a reply, include what they were responding to:
-```
-[2025-12-30 in "Logic and Mathematics"]
-> Original by John: "me talking to my bs math graduate gf about logic"
-User replied: "reasonable crashout tbh"
-```
-
-#### 3.3 Updated Summary Prompt
-```
-Analyze this person's messages to create a profile summary.
-
-Each message includes:
-- The discussion topic it was part of (if detected)
-- What message they were replying to (if applicable)
-
-Use this context to understand:
-- What topics they engage with most
-- How they respond to different people
-- Their role in discussions (initiator, responder, mediator, etc.)
-- Their communication style in different contexts
-```
+This results in summaries that capture:
+- How they respond to different topics
+- Their role in conversations (initiator vs responder)
+- Their interaction style with others
+- Topics that prompt them to engage
 
 ---
 
@@ -560,9 +563,10 @@ Recommended sequence:
    - Participant-based discussion search
    - Collapsible result sections, pagination support
 
-4. **Enhanced Profile Summaries** (quick win)
-   - Relatively small change to existing code
-   - Improves data quality for Virtual Chat personas
+4. **Enhanced Profile Summaries** ✅ DONE
+   - Fetches 5 messages before/after each of the person's messages
+   - Prompt focuses on the person while using context for understanding
+   - Results in better summaries capturing interaction style
 
 5. **Profile Activity Charts** ✅ DONE
    - Simple SQL aggregation + chart component
@@ -588,6 +592,8 @@ Recommended sequence:
    - Context expansion (before/after)
    - In-thread gap expansion
 
-10. **Virtual Chat** (capstone)
-    - Depends on good profile summaries
-    - Can use semantic search to find relevant messages for context
+10. **Virtual Chat** ✅ DONE (capstone)
+     - Full persona context from all archived messages
+     - SSE streaming with parallel agent responses
+     - @mention autocomplete, thinking indicators
+     - 1:1 chat from profile pages

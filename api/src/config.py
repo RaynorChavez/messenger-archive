@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # AI (Gemini)
     gemini_api_key: str = ""
     gemini_rate_limit_tokens_per_min: int = 800_000
+    
+    # Internal API key for service-to-service calls
+    internal_api_key: str = "internal-archive-service-key"
 
 
 @lru_cache()

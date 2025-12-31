@@ -7,6 +7,7 @@ from .settings import router as settings_router
 from .database import router as database_router
 from .discussions import router as discussions_router
 from .search import router as search_router
+from .virtual_chat import router as virtual_chat_router
 
 __all__ = [
     "auth_router",
@@ -18,4 +19,5 @@ __all__ = [
     "database_router",
     "discussions_router",
     "search_router",
+    "virtual_chat_router",
 ]

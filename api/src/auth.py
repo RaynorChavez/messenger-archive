@@ -87,3 +87,25 @@ async def get_current_session(request: Request) -> str:
         )
     
     return token
+
+
+async def get_current_session_or_internal(request: Request) -> str:
+    """
+    Dependency that validates either a session cookie OR an internal API key.
+    Used for endpoints that need to be called by internal services.
+    """
+    # Check for internal API key header first
+    internal_key = request.headers.get("X-Internal-API-Key")
+    if internal_key and internal_key == settings.internal_api_key:
+        return "internal"
+    
+    # Fall back to session cookie
+    token = request.cookies.get(TOKEN_COOKIE_NAME)
+    
+    if not token or not verify_session_token(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    
+    return token

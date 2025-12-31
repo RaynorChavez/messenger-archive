@@ -384,6 +384,23 @@ export interface AnalysisStatus {
   discussions_found: number;
   tokens_used: number;
   error_message: string | null;
+  // Incremental analysis fields
+  mode: "full" | "incremental" | null;
+  new_messages_count: number | null;
+  context_messages_count: number | null;
+}
+
+export interface AnalysisPreview {
+  incremental_available: boolean;
+  reason?: string;
+  new_messages: number;
+  total_messages: number;
+  context_messages?: number;
+  last_analysis: {
+    completed_at: string | null;
+    discussions_found: number;
+    end_message_id: number;
+  } | null;
 }
 
 export interface AnalyzeResponse {
@@ -528,6 +545,68 @@ export const search = {
     }),
 };
 
+// Virtual Chat
+export interface VirtualParticipant {
+  person_id: number;
+  display_name: string | null;
+  avatar_url: string | null;
+}
+
+export interface VirtualMessage {
+  id: number;
+  conversation_id: number;
+  sender_type: "user" | "agent";
+  person_id: number | null;
+  person_display_name: string | null;
+  person_avatar_url: string | null;
+  content: string;
+  created_at: string;
+}
+
+export interface VirtualConversation {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  participants: VirtualParticipant[];
+}
+
+export interface VirtualConversationWithMessages extends VirtualConversation {
+  messages: VirtualMessage[];
+}
+
+// SSE Event Types
+export type VirtualChatSSEEvent =
+  | { type: "user_message"; id: number; content: string }
+  | { type: "thinking"; person_id: number; display_name: string }
+  | { type: "chunk"; person_id: number; text: string }
+  | { type: "agent_done"; person_id: number; message_id: number | null }
+  | { type: "complete" }
+  | { type: "error"; message: string };
+
+export const virtualChat = {
+  createConversation: (participantIds: number[]) =>
+    fetchAPI<VirtualConversation>("/virtual-chat/conversations", {
+      method: "POST",
+      body: JSON.stringify({ participant_ids: participantIds }),
+    }),
+
+  getConversation: (id: number) =>
+    fetchAPI<VirtualConversationWithMessages>(`/virtual-chat/conversations/${id}`),
+
+  addParticipant: (conversationId: number, personId: number) =>
+    fetchAPI<VirtualParticipant>(
+      `/virtual-chat/conversations/${conversationId}/participants`,
+      {
+        method: "POST",
+        params: { person_id: personId },
+      }
+    ),
+
+  // Returns the SSE URL for sending a message
+  sendMessageUrl: (conversationId: number) =>
+    `${API_URL}/api/virtual-chat/conversations/${conversationId}/message`,
+};
+
 export const discussions = {
   list: (params?: { page?: number; page_size?: number; topic_id?: number; date?: string }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),
@@ -550,10 +629,13 @@ export const discussions = {
   timeline: (params?: { topic_id?: number }) =>
     fetchAPI<TimelineResponse>("/discussions/timeline", { params }),
 
-  analyze: () =>
+  analyze: (mode: "incremental" | "full" = "incremental") =>
     fetchAPI<AnalyzeResponse>("/discussions/analyze", {
       method: "POST",
+      params: { mode },
     }),
+
+  analysisPreview: () => fetchAPI<AnalysisPreview>("/discussions/analyze/preview"),
 
   analysisStatus: () => fetchAPI<AnalysisStatus>("/discussions/analysis-status"),
 

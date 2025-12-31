@@ -6,7 +6,9 @@ import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
 import { people, type PersonFull, type Message, type PersonActivityResponse, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle } from "lucide-react";
+import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { virtualChat } from "@/lib/api";
 import {
   BarChart,
   Bar,
@@ -18,6 +20,7 @@ import {
 
 export default function PersonDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const personId = Number(params.id);
 
   const [person, setPerson] = useState<PersonFull | null>(null);
@@ -27,6 +30,7 @@ export default function PersonDetailPage() {
   const [notes, setNotes] = useState("");
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [startingChat, setStartingChat] = useState(false);
   
   // Activity chart state
   const [activity, setActivity] = useState<PersonActivityResponse | null>(null);
@@ -75,6 +79,18 @@ export default function PersonDetailPage() {
       setSummaryError(error instanceof Error ? error.message : "Failed to generate summary");
     } finally {
       setGeneratingSummary(false);
+    }
+  };
+
+  const handleStartChat = async () => {
+    setStartingChat(true);
+    try {
+      const conv = await virtualChat.createConversation([personId]);
+      router.push(`/virtual-chat?id=${conv.id}`);
+    } catch (error) {
+      console.error("Failed to start chat:", error);
+    } finally {
+      setStartingChat(false);
     }
   };
 
@@ -143,6 +159,25 @@ export default function PersonDetailPage() {
                   </a>
                 )}
               </div>
+              
+              {/* Virtual Chat Button */}
+              <button
+                onClick={handleStartChat}
+                disabled={startingChat}
+                className="mt-3 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {startingChat ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting chat...
+                  </>
+                ) : (
+                  <>
+                    <MessageCircle className="h-4 w-4" />
+                    Virtual Chat with {person.display_name?.split(" ")[0] || "this person"}
+                  </>
+                )}
+              </button>
 
               {/* AI Summary */}
               <div className="mt-4 rounded-lg border p-4 bg-muted/50">

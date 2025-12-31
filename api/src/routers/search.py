@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 
 from ..db import get_db, Message, Discussion, Person, Topic, Embedding
-from ..auth import get_current_session
+from ..auth import get_current_session, get_current_session_or_internal
 from ..services.embeddings import get_embedding_service
 
 logger = logging.getLogger(__name__)
@@ -641,7 +641,7 @@ async def trigger_reindex(
     background_tasks: BackgroundTasks,
     scope: SearchScope = Query(SearchScope.ALL, description="Scope to reindex"),
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_session),
+    _user: str = Depends(get_current_session_or_internal),
 ):
     """Trigger reindexing of embeddings for the specified scope."""
     global _reindex_state
@@ -812,7 +812,7 @@ async def embed_entity(
     entity_type: str = Query(..., description="Entity type: message, discussion, person, topic"),
     entity_id: int = Query(..., description="Entity ID"),
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_session),
+    _user: str = Depends(get_current_session_or_internal),
 ):
     """Embed a single entity. Used for real-time updates when new content is added."""
     

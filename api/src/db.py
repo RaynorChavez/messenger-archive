@@ -82,6 +82,13 @@ class DiscussionAnalysisRun(Base):
     discussions_found = Column(Integer, default=0)
     tokens_used = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+    # Incremental analysis fields
+    mode = Column(String(20), default="full")  # 'full' or 'incremental'
+    start_message_id = Column(Integer, nullable=True)  # First new message analyzed (NULL for full)
+    end_message_id = Column(Integer, nullable=True)  # Last message analyzed
+    context_start_message_id = Column(Integer, nullable=True)  # Start of context window (for incremental)
+    new_messages_count = Column(Integer, default=0)  # Count of new messages processed
+    context_messages_count = Column(Integer, default=0)  # Count of context messages loaded
     
     discussions = relationship("Discussion", back_populates="analysis_run", cascade="all, delete-orphan")
 
@@ -160,6 +167,54 @@ class Embedding(Base):
     __table_args__ = (
         UniqueConstraint('entity_type', 'entity_id', name='uq_embedding_entity'),
     )
+
+
+# =============================================================================
+# Virtual Chat Models
+# =============================================================================
+
+class VirtualConversation(Base):
+    """A virtual chat conversation with AI personas."""
+    __tablename__ = "virtual_conversations"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    participants = relationship("VirtualParticipant", back_populates="conversation", cascade="all, delete-orphan")
+    messages = relationship("VirtualMessage", back_populates="conversation", cascade="all, delete-orphan")
+
+
+class VirtualParticipant(Base):
+    """A person participating in a virtual conversation as an AI agent."""
+    __tablename__ = "virtual_participants"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("virtual_conversations.id", ondelete="CASCADE"), nullable=False)
+    person_id = Column(Integer, ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    conversation = relationship("VirtualConversation", back_populates="participants")
+    person = relationship("Person")
+    
+    __table_args__ = (
+        UniqueConstraint('conversation_id', 'person_id', name='uq_virtual_participant'),
+    )
+
+
+class VirtualMessage(Base):
+    """A message in a virtual conversation (from user or AI agent)."""
+    __tablename__ = "virtual_messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("virtual_conversations.id", ondelete="CASCADE"), nullable=False)
+    sender_type = Column(String(20), nullable=False)  # 'user' or 'agent'
+    person_id = Column(Integer, ForeignKey("people.id", ondelete="SET NULL"), nullable=True)  # NULL for user
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    conversation = relationship("VirtualConversation", back_populates="messages")
+    person = relationship("Person")
 
 
 # =============================================================================

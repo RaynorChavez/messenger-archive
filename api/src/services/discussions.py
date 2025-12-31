@@ -644,6 +644,277 @@ OUTPUT STRICT JSON (no markdown, no extra text):
             "windows_processed": self.state.windows_processed
         }
     
+    # =============================================================================
+    # Incremental Analysis
+    # =============================================================================
+    
+    CONTEXT_WINDOWS = 4  # ~120 messages of context for incremental mode
+    
+    def get_incremental_cutoff(self) -> Optional[int]:
+        """Find the message ID to start from for incremental analysis."""
+        from ..db import DiscussionAnalysisRun
+        from sqlalchemy import desc
+        
+        # Get last COMPLETED run (not failed or running)
+        last_run = self.db.query(DiscussionAnalysisRun).filter(
+            DiscussionAnalysisRun.status == "completed",
+            DiscussionAnalysisRun.end_message_id.isnot(None)
+        ).order_by(desc(DiscussionAnalysisRun.completed_at)).first()
+        
+        if not last_run:
+            return None  # No valid previous run, must do full
+        
+        return last_run.end_message_id
+    
+    def load_incremental_context(self, cutoff_message_id: int) -> tuple:
+        """Load context messages and active discussions for incremental run.
+        
+        Returns:
+            (context_messages, active_discussions, context_start_id)
+        """
+        from ..db import Message, Discussion, DiscussionMessage
+        from datetime import timedelta
+        
+        # Get the cutoff message to find its timestamp
+        cutoff_msg = self.db.query(Message).filter(Message.id == cutoff_message_id).first()
+        if not cutoff_msg:
+            raise ValueError(f"Cutoff message {cutoff_message_id} not found")
+        
+        context_count = self.CONTEXT_WINDOWS * self.WINDOW_SIZE
+        
+        # Load context messages (before and including cutoff)
+        context_messages = (
+            self.db.query(Message)
+            .filter(Message.id <= cutoff_message_id)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(Message.id.desc())
+            .limit(context_count)
+            .all()
+        )
+        
+        # Reverse to chronological order
+        context_messages = list(reversed(context_messages))
+        context_start_id = context_messages[0].id if context_messages else None
+        
+        # Load discussions that might still be active
+        # Consider discussions that ended within 48h of cutoff as potentially active
+        cutoff_time = cutoff_msg.timestamp
+        active_discussions = (
+            self.db.query(Discussion)
+            .filter(Discussion.ended_at >= cutoff_time - timedelta(hours=48))
+            .all()
+        )
+        
+        logger.info(f"Loaded {len(context_messages)} context messages, {len(active_discussions)} potentially active discussions")
+        
+        return context_messages, active_discussions, context_start_id
+    
+    def rebuild_state_from_db(self, active_discussions: List[Any]) -> None:
+        """Rebuild AnalysisState from previous run's discussions."""
+        from ..db import Message, DiscussionMessage
+        from sqlalchemy import desc
+        
+        for disc in active_discussions:
+            # Get message IDs for this discussion
+            msg_links = self.db.query(DiscussionMessage).filter(
+                DiscussionMessage.discussion_id == disc.id
+            ).all()
+            msg_ids = [link.message_id for link in msg_links]
+            
+            # Generate topic keywords from title
+            keywords = self._generate_topic_keywords(disc.title)
+            
+            # Get recent participants
+            if msg_ids:
+                recent_msgs = (
+                    self.db.query(Message)
+                    .filter(Message.id.in_(msg_ids[-20:]))  # Last 20 messages
+                    .all()
+                )
+                participants = list(set(
+                    m.sender.display_name for m in recent_msgs 
+                    if m.sender and m.sender.display_name
+                ))[:5]
+            else:
+                participants = []
+            
+            temp_id = f"existing_{disc.id}"
+            self.state.active_discussions[disc.id] = ActiveDiscussion(
+                id=disc.id,
+                title=disc.title,
+                temp_id=temp_id,
+                message_ids=msg_ids,
+                started_at=disc.started_at,
+                ended_at=disc.ended_at,
+                last_active_window=0,  # Will be updated as we process context
+                dormant=False,
+                topic_keywords=keywords,
+                recent_participants=participants
+            )
+            self.state.temp_id_to_db_id[temp_id] = disc.id
+        
+        logger.info(f"Rebuilt state with {len(self.state.active_discussions)} active discussions")
+    
+    def _process_context_window_readonly(self, messages: List[Any]) -> None:
+        """Process a context window to warm up state. Read-only - no DB writes."""
+        
+        response = self._process_window(messages)
+        
+        if response:
+            # Update in-memory state only - identify which discussions are active
+            message_map = {m.id: m for m in messages}
+            
+            for classification in response.classifications:
+                for assignment in classification.assignments:
+                    temp_id = assignment.discussion_id
+                    
+                    # Resolve to DB ID
+                    if isinstance(temp_id, str) and temp_id in self.state.temp_id_to_db_id:
+                        db_id = self.state.temp_id_to_db_id[temp_id]
+                    elif isinstance(temp_id, int) and temp_id in self.state.active_discussions:
+                        db_id = temp_id
+                    else:
+                        continue  # Skip unknown discussions in context
+                    
+                    disc = self.state.active_discussions.get(db_id)
+                    if disc:
+                        # Mark as active this window
+                        disc.last_active_window = self.state.current_window
+                        if disc.dormant:
+                            disc.dormant = False
+            
+            # Check for dormancy
+            DORMANCY_THRESHOLD = 5
+            for db_id, disc in self.state.active_discussions.items():
+                if disc.ended or disc.dormant:
+                    continue
+                windows_inactive = self.state.current_window - disc.last_active_window
+                if windows_inactive >= DORMANCY_THRESHOLD:
+                    disc.dormant = True
+    
+    async def analyze_incremental(
+        self,
+        update_progress_callback=None
+    ) -> Dict[str, Any]:
+        """Run incremental analysis on new messages since last completed run.
+        
+        Args:
+            update_progress_callback: Optional callback(windows_processed, total_windows, phase)
+        
+        Returns:
+            Dict with analysis summary
+        """
+        from ..db import Message
+        
+        # Find cutoff point
+        cutoff_id = self.get_incremental_cutoff()
+        
+        if cutoff_id is None:
+            logger.info("No previous completed run found, falling back to full analysis")
+            return await self.analyze_all_messages(update_progress_callback)
+        
+        # Load context and rebuild state
+        context_messages, active_discussions, context_start_id = self.load_incremental_context(cutoff_id)
+        
+        # Reset state and rebuild from existing discussions
+        self.state = AnalysisState()
+        self.rebuild_state_from_db(active_discussions)
+        
+        # Get new messages (after cutoff)
+        new_messages = (
+            self.db.query(Message)
+            .filter(Message.id > cutoff_id)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(asc(Message.timestamp))
+            .all()
+        )
+        
+        if not new_messages:
+            logger.info("No new messages to analyze")
+            return {
+                "discussions_found": 0,
+                "discussions_extended": 0,
+                "new_messages": 0,
+                "context_messages": len(context_messages),
+                "total_tokens": 0,
+                "windows_processed": 0,
+                "mode": "incremental"
+            }
+        
+        logger.info(f"Incremental analysis: {len(context_messages)} context, {len(new_messages)} new messages")
+        
+        # Calculate total windows (context + new)
+        net_per_window = self.WINDOW_SIZE - self.OVERLAP_SIZE
+        context_windows = max(1, (len(context_messages) + net_per_window - 1) // net_per_window) if context_messages else 0
+        new_windows = max(1, (len(new_messages) + net_per_window - 1) // net_per_window)
+        total_windows = context_windows + new_windows
+        
+        # Phase 1: Process context windows (read-only, warms up state)
+        logger.info(f"Processing {context_windows} context windows...")
+        window_start = 0
+        while window_start < len(context_messages):
+            self.state.current_window += 1
+            window_end = min(window_start + self.WINDOW_SIZE, len(context_messages))
+            window_msgs = context_messages[window_start:window_end]
+            
+            self._process_context_window_readonly(window_msgs)
+            self.state.windows_processed += 1
+            
+            if update_progress_callback:
+                update_progress_callback(self.state.windows_processed, total_windows)
+            
+            window_start += net_per_window
+        
+        logger.info(f"Context processing complete. Active discussions: {len([d for d in self.state.active_discussions.values() if not d.dormant])}")
+        
+        # Phase 2: Process new messages (writes to DB)
+        discussions_before = set(self.state.active_discussions.keys())
+        
+        logger.info(f"Processing {new_windows} new message windows...")
+        window_start = 0
+        while window_start < len(new_messages):
+            self.state.current_window += 1
+            window_end = min(window_start + self.WINDOW_SIZE, len(new_messages))
+            window_msgs = new_messages[window_start:window_end]
+            
+            logger.info(f"Processing new window {self.state.windows_processed + 1}/{total_windows}")
+            
+            response = self._process_window(window_msgs)
+            
+            if response:
+                self._update_state_from_response(response, window_msgs)
+            else:
+                logger.warning(f"Failed to process window {self.state.windows_processed + 1}")
+            
+            self.state.windows_processed += 1
+            
+            if update_progress_callback:
+                update_progress_callback(self.state.windows_processed, total_windows)
+            
+            window_start += net_per_window
+        
+        # Calculate stats
+        discussions_after = set(self.state.active_discussions.keys())
+        new_discussion_ids = discussions_after - discussions_before
+        
+        # Get the last message ID for tracking
+        end_message_id = new_messages[-1].id if new_messages else cutoff_id
+        
+        return {
+            "discussions_found": len(new_discussion_ids),
+            "discussions_extended": len(discussions_before & discussions_after),
+            "new_messages": len(new_messages),
+            "context_messages": len(context_messages),
+            "total_tokens": self.state.total_tokens_used,
+            "windows_processed": self.state.windows_processed,
+            "mode": "incremental",
+            "start_message_id": new_messages[0].id if new_messages else None,
+            "end_message_id": end_message_id,
+            "context_start_message_id": context_start_id
+        }
+    
     async def generate_discussion_summary(self, discussion_id: int, title: str, messages: List[Any]) -> str:
         """Generate a summary for a discussion."""
         
@@ -875,9 +1146,13 @@ Output JSON with topics and assignments.'''
                 self.db.delete(topic)
             self.db.commit()
             
+            # Get all topic IDs that were created/updated
+            all_topic_ids = list(topic_name_to_id.values())
+            
             return {
                 "topics_created": len(ai_response.topics),
-                "discussions_classified": discussions_classified
+                "discussions_classified": discussions_classified,
+                "topic_ids": all_topic_ids
             }
             
         except Exception as e:

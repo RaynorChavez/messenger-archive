@@ -98,7 +98,7 @@ class DiscussionListResponse(BaseModel):
 
 class AnalysisStatusResponse(BaseModel):
     """Status of discussion analysis run."""
-    status: str  # none, running, completed, failed
+    status: str  # none, running, completed, failed, stale
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     windows_processed: int = 0
@@ -106,6 +106,10 @@ class AnalysisStatusResponse(BaseModel):
     discussions_found: int = 0
     tokens_used: int = 0
     error_message: Optional[str] = None
+    # Incremental analysis fields
+    mode: Optional[str] = None  # "full" or "incremental"
+    new_messages_count: Optional[int] = None
+    context_messages_count: Optional[int] = None
 
 
 class AnalyzeRequest(BaseModel):

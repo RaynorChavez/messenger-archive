@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   MessageSquare,
+  MessageCircle,
   GitBranch,
   Users,
   Settings,
@@ -20,6 +21,7 @@ const navigation = [
   { name: "Messages", href: "/messages", icon: MessageSquare },
   { name: "Threads", href: "/threads", icon: GitBranch },
   { name: "Discussions", href: "/discussions", icon: Sparkles },
+  { name: "Virtual Chat", href: "/virtual-chat", icon: MessageCircle },
   { name: "People", href: "/people", icon: Users },
   { name: "Database", href: "/database", icon: Database },
   { name: "Settings", href: "/settings", icon: Settings },

@@ -290,6 +290,7 @@ class ArchiveClient:
                 response = await client.post(
                     f"{api_url}/api/search/embed",
                     params={"entity_type": "message", "entity_id": message_id},
+                    headers={"X-Internal-API-Key": "internal-archive-service-key"},
                     timeout=30.0
                 )
                 if response.status_code == 200:

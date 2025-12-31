@@ -46,19 +46,83 @@ router = APIRouter(prefix="/discussions", tags=["discussions"])
 _analysis_running = False
 
 
-def run_analysis_sync(run_id: int, db_url: str, api_key: str):
+async def _embed_discussions(db: Session, discussion_ids: list):
+    """Generate embeddings for a list of discussions."""
+    from ..services.embeddings import get_embedding_service
+    
+    if not discussion_ids:
+        return
+    
+    try:
+        embedding_service = get_embedding_service()
+        if not embedding_service:
+            logger.warning("Embedding service not available, skipping discussion embeddings")
+            return
+        
+        # Get discussions with their content
+        discussions_data = db.query(Discussion).filter(Discussion.id.in_(discussion_ids)).all()
+        
+        for disc in discussions_data:
+            try:
+                content = embedding_service.prepare_discussion_content(disc.title, disc.summary)
+                if content:
+                    embedding = await embedding_service.embed_text(content)
+                    if embedding:
+                        embedding_service.store_embedding(db, "discussion", disc.id, embedding, content)
+            except Exception as e:
+                logger.error(f"Failed to embed discussion {disc.id}: {e}")
+                continue
+        
+        logger.info(f"Generated embeddings for {len(discussions_data)} discussions")
+    except Exception as e:
+        logger.error(f"Failed to embed discussions: {e}")
+
+
+async def _embed_topics(db: Session, topic_ids: list):
+    """Generate embeddings for a list of topics."""
+    from ..services.embeddings import get_embedding_service
+    
+    if not topic_ids:
+        return
+    
+    try:
+        embedding_service = get_embedding_service()
+        if not embedding_service:
+            logger.warning("Embedding service not available, skipping topic embeddings")
+            return
+        
+        # Get topics with their content
+        topics_data = db.query(Topic).filter(Topic.id.in_(topic_ids)).all()
+        
+        for topic in topics_data:
+            try:
+                content = embedding_service.prepare_topic_content(topic.name, topic.description)
+                if content:
+                    embedding = await embedding_service.embed_text(content)
+                    if embedding:
+                        embedding_service.store_embedding(db, "topic", topic.id, embedding, content)
+            except Exception as e:
+                logger.error(f"Failed to embed topic {topic.id}: {e}")
+                continue
+        
+        logger.info(f"Generated embeddings for {len(topics_data)} topics")
+    except Exception as e:
+        logger.error(f"Failed to embed topics: {e}")
+
+
+def run_analysis_sync(run_id: int, db_url: str, api_key: str, mode: str = "full"):
     """Background task to run discussion analysis in a separate thread."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_run_analysis_async(run_id, db_url, api_key))
+        loop.run_until_complete(_run_analysis_async(run_id, db_url, api_key, mode))
     finally:
         loop.close()
 
 
-async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
-    """Actual analysis logic."""
+async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str = "full"):
+    """Actual analysis logic. Supports 'full' or 'incremental' mode."""
     global _analysis_running
     
     from sqlalchemy import create_engine
@@ -78,13 +142,17 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
             logger.error(f"Analysis run {run_id} not found")
             return
         
-        # Delete any previous discussions (replace mode)
-        previous_runs = db.query(DiscussionAnalysisRun).filter(
-            DiscussionAnalysisRun.id != run_id
-        ).all()
-        for prev_run in previous_runs:
-            db.delete(prev_run)
-        db.commit()
+        if mode == "full":
+            # Delete any previous discussions (replace mode)
+            previous_runs = db.query(DiscussionAnalysisRun).filter(
+                DiscussionAnalysisRun.id != run_id
+            ).all()
+            for prev_run in previous_runs:
+                db.delete(prev_run)
+            db.commit()
+            logger.info("Full mode: deleted previous analysis runs")
+        else:
+            logger.info("Incremental mode: preserving existing discussions")
         
         # Create analyzer with run_id so it can write to DB directly
         analyzer = DiscussionAnalyzer(api_key=api_key, db_session=db, run_id=run_id)
@@ -96,18 +164,53 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
             run.discussions_found = len(analyzer.state.active_discussions)
             db.commit()
         
-        # Run analysis (writes to DB incrementally)
-        result = await analyzer.analyze_all_messages(
-            update_progress_callback=update_progress
-        )
+        # Run analysis based on mode
+        if mode == "incremental":
+            result = await analyzer.analyze_incremental(
+                update_progress_callback=update_progress
+            )
+            # Check if it fell back to full
+            if result.get("mode") == "incremental":
+                run.mode = "incremental"
+                run.start_message_id = result.get("start_message_id")
+                run.end_message_id = result.get("end_message_id")
+                run.context_start_message_id = result.get("context_start_message_id")
+                run.new_messages_count = result.get("new_messages", 0)
+                run.context_messages_count = result.get("context_messages", 0)
+        else:
+            result = await analyzer.analyze_all_messages(
+                update_progress_callback=update_progress
+            )
+            run.mode = "full"
+            # Set end_message_id to the last message analyzed
+            last_msg = db.query(Message).order_by(Message.id.desc()).first()
+            if last_msg:
+                run.end_message_id = last_msg.id
         
-        # Update participant counts for all discussions
-        all_discussions = db.query(Discussion).filter(
-            Discussion.analysis_run_id == run_id
-        ).all()
+        # For full mode: update all discussions
+        # For incremental mode: only update new and extended discussions
+        if mode == "full":
+            discussions_to_update = db.query(Discussion).filter(
+                Discussion.analysis_run_id == run_id
+            ).all()
+        else:
+            # Update discussions created in this run + extended discussions
+            discussions_to_update = db.query(Discussion).filter(
+                Discussion.analysis_run_id == run_id
+            ).all()
+            # Also include extended discussions (those with new messages)
+            # We'll regenerate summaries for all active discussions to be safe
+            extended_ids = list(analyzer.state.active_discussions.keys())
+            extended_discussions = db.query(Discussion).filter(
+                Discussion.id.in_(extended_ids)
+            ).all()
+            existing_ids = {d.id for d in discussions_to_update}
+            for d in extended_discussions:
+                if d.id not in existing_ids:
+                    discussions_to_update.append(d)
         
-        for discussion in all_discussions:
-            # Count unique participants
+        # Update participant counts
+        for discussion in discussions_to_update:
             participant_count = db.query(func.count(func.distinct(Message.sender_id))).join(
                 DiscussionMessage, Message.id == DiscussionMessage.message_id
             ).filter(
@@ -117,9 +220,9 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
         
         db.commit()
         
-        # Generate summaries for each discussion
-        logger.info("Generating discussion summaries...")
-        for discussion in all_discussions:
+        # Generate summaries
+        logger.info(f"Generating summaries for {len(discussions_to_update)} discussions...")
+        for discussion in discussions_to_update:
             messages = (
                 db.query(Message)
                 .join(DiscussionMessage)
@@ -138,6 +241,10 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
         
         db.commit()
         
+        # Generate embeddings for discussions that were created/updated
+        logger.info(f"Generating embeddings for {len(discussions_to_update)} discussions...")
+        await _embed_discussions(db, [d.id for d in discussions_to_update])
+        
         # Update run status
         run.status = "completed"
         run.completed_at = datetime.utcnow()
@@ -145,10 +252,12 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
         run.tokens_used = result.get("total_tokens", 0)
         db.commit()
         
-        logger.info(f"Analysis complete: {result.get('discussions_found', 0)} discussions created")
+        logger.info(f"Analysis complete ({mode}): {result.get('discussions_found', 0)} discussions")
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
         run = db.query(DiscussionAnalysisRun).filter(DiscussionAnalysisRun.id == run_id).first()
         if run:
             run.status = "failed"
@@ -163,10 +272,14 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str):
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def start_analysis(
+    mode: str = Query("incremental", pattern="^(incremental|full)$", description="Analysis mode: 'incremental' (only new messages) or 'full' (all messages)"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Start a new discussion analysis. Replaces any previous analysis.
+    """Start a new discussion analysis.
+    
+    - incremental (default): Only process new messages since last completed run. Cost-efficient.
+    - full: Delete all discussions and re-analyze from scratch.
     
     If a previous analysis was interrupted (stale), this will start fresh.
     """
@@ -209,15 +322,69 @@ async def start_analysis(
     # Start in a separate thread to not block the main event loop
     thread = threading.Thread(
         target=run_analysis_sync,
-        args=(run.id, settings.database_url, settings.gemini_api_key),
+        args=(run.id, settings.database_url, settings.gemini_api_key, mode),
         daemon=True
     )
     thread.start()
     
     return AnalyzeResponse(
-        message="Analysis started",
+        message=f"Analysis started ({mode} mode)",
         run_id=run.id
     )
+
+
+@router.get("/analyze/preview")
+async def preview_analysis(
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Preview what an analysis run would process without starting it.
+    
+    Returns information about:
+    - Whether incremental mode is available
+    - How many new messages would be processed
+    - Last completed analysis info
+    """
+    # Get last completed run
+    last_run = db.query(DiscussionAnalysisRun).filter(
+        DiscussionAnalysisRun.status == "completed",
+        DiscussionAnalysisRun.end_message_id.isnot(None)
+    ).order_by(desc(DiscussionAnalysisRun.id)).first()
+    
+    # Count total messages
+    total_messages = db.query(func.count(Message.id)).filter(
+        Message.content.isnot(None),
+        Message.content != ""
+    ).scalar() or 0
+    
+    if not last_run or not last_run.end_message_id:
+        # No previous run - must do full analysis
+        return {
+            "incremental_available": False,
+            "reason": "No previous completed analysis",
+            "new_messages": total_messages,
+            "total_messages": total_messages,
+            "last_analysis": None
+        }
+    
+    # Count new messages since last run
+    new_messages = db.query(func.count(Message.id)).filter(
+        Message.id > last_run.end_message_id,
+        Message.content.isnot(None),
+        Message.content != ""
+    ).scalar() or 0
+    
+    return {
+        "incremental_available": True,
+        "new_messages": new_messages,
+        "total_messages": total_messages,
+        "context_messages": min(120, total_messages),  # ~4 windows of context
+        "last_analysis": {
+            "completed_at": last_run.completed_at.isoformat() if last_run.completed_at else None,
+            "discussions_found": last_run.discussions_found,
+            "end_message_id": last_run.end_message_id
+        }
+    }
 
 
 @router.get("/analysis-status", response_model=AnalysisStatusResponse)
@@ -257,7 +424,10 @@ async def get_analysis_status(
         total_windows=run.total_windows or 0,
         discussions_found=run.discussions_found or 0,
         tokens_used=run.tokens_used or 0,
-        error_message=error_message
+        error_message=error_message,
+        mode=run.mode,
+        new_messages_count=run.new_messages_count,
+        context_messages_count=run.context_messages_count,
     )
 
 
@@ -664,6 +834,12 @@ async def _run_topic_classification_async(run_id: int, db_url: str, api_key: str
         
         # Run classification
         result = await analyzer.classify_topics()
+        
+        # Generate embeddings for newly created topics
+        new_topic_ids = result.get("topic_ids", [])
+        if new_topic_ids:
+            logger.info(f"Generating embeddings for {len(new_topic_ids)} topics...")
+            await _embed_topics(db, new_topic_ids)
         
         # Update run status
         run.status = "completed"
