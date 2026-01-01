@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { people, type PersonFull, type Message, type PersonActivityResponse, mxcToHttp } from "@/lib/api";
+import { people, type PersonFull, type Message, type PersonActivityResponse, type PersonRoomStats, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle } from "lucide-react";
+import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle, Hash } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { virtualChat } from "@/lib/api";
 import {
@@ -36,19 +36,24 @@ export default function PersonDetailPage() {
   const [activity, setActivity] = useState<PersonActivityResponse | null>(null);
   const [activityPeriod, setActivityPeriod] = useState<"month" | "3months" | "6months" | "year" | "all">("6months");
   const [activityGranularity, setActivityGranularity] = useState<"day" | "week" | "month">("day");
+  
+  // Room breakdown state
+  const [roomStats, setRoomStats] = useState<PersonRoomStats[]>([]);
 
   useEffect(() => {
     async function load() {
       try {
-        const [personData, messagesData, activityData] = await Promise.all([
+        const [personData, messagesData, activityData, roomsData] = await Promise.all([
           people.get(personId),
           people.messages(personId),
           people.activity(personId, activityPeriod, activityGranularity),
+          people.rooms(personId),
         ]);
         setPerson(personData);
         setNotes(personData.notes || "");
         setMessages(messagesData.messages);
         setActivity(activityData);
+        setRoomStats(roomsData.rooms);
       } catch (error) {
         console.error("Failed to load person:", error);
       } finally {
@@ -344,6 +349,53 @@ export default function PersonDetailPage() {
             </div>
           )}
         </div>
+
+        {/* Room Breakdown */}
+        {roomStats.length > 1 && (
+          <div className="rounded-xl border bg-card p-6">
+            <h2 className="text-lg font-semibold mb-4">Room Breakdown</h2>
+            <div className="space-y-3">
+              {roomStats.map((room) => {
+                const percentage = person ? Math.round((room.message_count / person.message_count) * 100) : 0;
+                return (
+                  <div key={room.room_id} className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 min-w-[180px]">
+                      <Hash className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-sm font-medium truncate">
+                        {room.room_name?.replace(/ - Manila Dialectics Society$/, "") || `Room ${room.room_id}`}
+                      </span>
+                    </div>
+                    <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all"
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+                    <div className="text-sm text-muted-foreground min-w-[120px] text-right">
+                      {room.message_count.toLocaleString()} ({percentage}%)
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-4 pt-4 border-t grid grid-cols-2 gap-4 text-sm">
+              {roomStats.map((room) => (
+                <div key={room.room_id} className="text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    {room.room_name?.replace(/ - Manila Dialectics Society$/, "") || `Room ${room.room_id}`}:
+                  </span>{" "}
+                  {room.first_seen_at && (
+                    <>First seen {new Date(room.first_seen_at).toLocaleDateString()}</>
+                  )}
+                  {room.first_seen_at && room.last_seen_at && ", "}
+                  {room.last_seen_at && (
+                    <>last active {new Date(room.last_seen_at).toLocaleDateString()}</>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Recent messages */}
         <div className="rounded-xl border bg-card p-6">

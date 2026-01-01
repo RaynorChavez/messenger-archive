@@ -47,9 +47,33 @@ class Room(Base):
     matrix_room_id = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=True)
     is_group = Column(Boolean, default=True)
+    avatar_url = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    display_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     messages = relationship("Message", back_populates="room")
+    members = relationship("RoomMember", back_populates="room")
+
+
+class RoomMember(Base):
+    """Tracks which people are members of which rooms with per-room stats."""
+    __tablename__ = "room_members"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
+    person_id = Column(Integer, ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    message_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    room = relationship("Room", back_populates="members")
+    person = relationship("Person")
+    
+    __table_args__ = (
+        UniqueConstraint('room_id', 'person_id', name='uq_room_member'),
+    )
 
 
 class Message(Base):

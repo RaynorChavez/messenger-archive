@@ -154,6 +154,7 @@ _reindex_state: Dict[str, Any] = {
 async def search(
     q: str = Query(..., min_length=1, description="Search query"),
     scope: SearchScope = Query(SearchScope.ALL, description="Scope of search"),
+    room_id: Optional[int] = Query(None, description="Filter messages by room ID"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Results per page per entity type"),
     db: Session = Depends(get_db),
@@ -214,7 +215,7 @@ async def search(
     # Search each entity type
     for entity_type in scopes_to_search:
         entity_results, total = await _search_entity_type(
-            db, entity_type, q, query_embedding, page, page_size
+            db, entity_type, q, query_embedding, page, page_size, room_id
         )
         
         if entity_type == "message":
@@ -317,6 +318,7 @@ async def _search_entity_type(
     query_embedding: List[float],
     page: int,
     page_size: int,
+    room_id: Optional[int] = None,
 ) -> tuple[List[Any], int]:
     """Search a specific entity type with hybrid scoring. Returns (results, total_count)."""
     
@@ -328,27 +330,43 @@ async def _search_entity_type(
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
     
     # Get semantic matches from embeddings table
-    # Note: Use cast() syntax instead of :: to avoid parameter parsing issues
-    semantic_query = text("""
-        SELECT 
-            entity_id,
-            1 - (embedding <=> cast(:embedding as vector)) as semantic_score
-        FROM embeddings
-        WHERE entity_type = :entity_type
-        AND 1 - (embedding <=> cast(:embedding as vector)) >= :threshold
-        ORDER BY semantic_score DESC
-        LIMIT :limit
-    """)
+    # For messages, we can filter by room_id via a join
+    if entity_type == "message" and room_id is not None:
+        semantic_query = text("""
+            SELECT 
+                e.entity_id,
+                1 - (e.embedding <=> cast(:embedding as vector)) as semantic_score
+            FROM embeddings e
+            JOIN messages m ON e.entity_id = m.id
+            WHERE e.entity_type = :entity_type
+            AND m.room_id = :room_id
+            AND 1 - (e.embedding <=> cast(:embedding as vector)) >= :threshold
+            ORDER BY semantic_score DESC
+            LIMIT :limit
+        """)
+    else:
+        # Note: Use cast() syntax instead of :: to avoid parameter parsing issues
+        semantic_query = text("""
+            SELECT 
+                entity_id,
+                1 - (embedding <=> cast(:embedding as vector)) as semantic_score
+            FROM embeddings
+            WHERE entity_type = :entity_type
+            AND 1 - (embedding <=> cast(:embedding as vector)) >= :threshold
+            ORDER BY semantic_score DESC
+            LIMIT :limit
+        """)
     
-    semantic_results = db.execute(
-        semantic_query,
-        {
-            "embedding": embedding_str,
-            "entity_type": entity_type,
-            "threshold": SIMILARITY_THRESHOLD,
-            "limit": MAX_CANDIDATES,  # Get many candidates for proper pagination
-        }
-    ).fetchall()
+    query_params = {
+        "embedding": embedding_str,
+        "entity_type": entity_type,
+        "threshold": SIMILARITY_THRESHOLD,
+        "limit": MAX_CANDIDATES,  # Get many candidates for proper pagination
+    }
+    if entity_type == "message" and room_id is not None:
+        query_params["room_id"] = room_id
+    
+    semantic_results = db.execute(semantic_query, query_params).fetchall()
     
     entity_ids = [r[0] for r in semantic_results]
     semantic_scores = {r[0]: float(r[1]) for r in semantic_results}

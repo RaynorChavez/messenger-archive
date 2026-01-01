@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import { useRoom } from "@/contexts/room-context";
 
 const SCOPES: { value: SearchScope; label: string; icon: React.ReactNode }[] = [
   { value: "all", label: "All", icon: <Search className="h-4 w-4" /> },
@@ -335,6 +336,7 @@ function ResultSection({
 function SearchContent() {
   const searchParams = useSearchParams();
   const queryParam = searchParams.get("q") || "";
+  const { currentRoom } = useRoom();
 
   const [searchQuery, setSearchQuery] = useState(queryParam);
   const [scope, setScope] = useState<SearchScope>("all");
@@ -347,17 +349,17 @@ function SearchContent() {
     if (queryParam) {
       setSearchQuery(queryParam);
       setPage(1);
-      performSearch(queryParam, scope, 1);
+      performSearch(queryParam, scope, 1, currentRoom?.id);
     }
-  }, [queryParam]);
+  }, [queryParam, currentRoom?.id]);
 
-  const performSearch = async (q: string, s: SearchScope, p: number) => {
+  const performSearch = async (q: string, s: SearchScope, p: number, roomId?: number) => {
     if (!q.trim()) return;
 
     setLoading(true);
     setError(null);
     try {
-      const result = await search.query(q, s, p, 20);
+      const result = await search.query(q, s, p, 20, roomId);
       setResults(result);
     } catch (err) {
       console.error("Search failed:", err);
@@ -371,7 +373,7 @@ function SearchContent() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setPage(1);
-    performSearch(searchQuery, scope, 1);
+    performSearch(searchQuery, scope, 1, currentRoom?.id);
     // Update URL
     const url = new URL(window.location.href);
     url.searchParams.set("q", searchQuery);
@@ -382,13 +384,13 @@ function SearchContent() {
     setScope(newScope);
     setPage(1);
     if (searchQuery) {
-      performSearch(searchQuery, newScope, 1);
+      performSearch(searchQuery, newScope, 1, currentRoom?.id);
     }
   };
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
-    performSearch(searchQuery, scope, newPage);
+    performSearch(searchQuery, scope, newPage, currentRoom?.id);
     // Scroll to top of results
     window.scrollTo({ top: 0, behavior: "smooth" });
   };

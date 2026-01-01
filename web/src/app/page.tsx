@@ -14,6 +14,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { useRoom } from "@/contexts/room-context";
 
 function StatCard({
   title,
@@ -83,13 +84,15 @@ export default function DashboardPage() {
   const [data, setData] = useState<Stats | null>(null);
   const [recent, setRecent] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const { currentRoom } = useRoom();
 
   useEffect(() => {
     async function load() {
       try {
+        const roomId = currentRoom?.id;
         const [statsData, recentData] = await Promise.all([
-          stats.get(),
-          stats.recent(10),
+          stats.get(roomId),
+          stats.recent(10, roomId),
         ]);
         setData(statsData);
         setRecent(recentData);
@@ -100,7 +103,7 @@ export default function DashboardPage() {
       }
     }
     load();
-  }, []);
+  }, [currentRoom?.id]);
 
   if (loading) {
     return (

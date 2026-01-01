@@ -5,16 +5,18 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { threads, type Thread } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useRoom } from "@/contexts/room-context";
 
 export default function ThreadsPage() {
   const [data, setData] = useState<Thread[]>([]);
   const [expandedThread, setExpandedThread] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const { currentRoom } = useRoom();
 
   useEffect(() => {
     async function load() {
       try {
-        const result = await threads.list();
+        const result = await threads.list(undefined, currentRoom?.id);
         setData(result.threads);
       } catch (error) {
         console.error("Failed to load threads:", error);
@@ -23,7 +25,7 @@ export default function ThreadsPage() {
       }
     }
     load();
-  }, []);
+  }, [currentRoom?.id]);
 
   const toggleThread = async (threadId: number) => {
     if (expandedThread === threadId) {

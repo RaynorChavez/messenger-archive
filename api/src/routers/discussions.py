@@ -21,6 +21,7 @@ from ..db import (
     Topic,
     DiscussionTopic,
     TopicClassificationRun,
+    Room,
 )
 from ..auth import get_current_session
 from ..config import get_settings
@@ -434,6 +435,7 @@ async def get_analysis_status(
 @router.get("/timeline")
 async def get_timeline(
     topic_id: Optional[int] = Query(None, description="Filter by topic ID"),
+    room_id: Optional[int] = Query(None, description="Filter by room ID"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
@@ -443,12 +445,18 @@ async def get_timeline(
     # Base query - group by date
     query = db.query(
         cast(Discussion.started_at, Date).label("date"),
-        func.count(Discussion.id).label("count")
+        func.count(func.distinct(Discussion.id)).label("count")
     )
     
     # Apply topic filter if specified
     if topic_id is not None:
         query = query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    
+    # Apply room filter if specified (discussions that have messages in this room)
+    if room_id is not None:
+        if topic_id is None:
+            query = query.join(DiscussionMessage, Discussion.id == DiscussionMessage.discussion_id)
+        query = query.join(Message, DiscussionMessage.message_id == Message.id).filter(Message.room_id == room_id)
     
     # Group by date and order descending
     results = (
@@ -459,9 +467,13 @@ async def get_timeline(
     )
     
     # Get total count
-    count_query = db.query(func.count(Discussion.id))
+    count_query = db.query(func.count(func.distinct(Discussion.id)))
     if topic_id is not None:
         count_query = count_query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    if room_id is not None:
+        if topic_id is None:
+            count_query = count_query.join(DiscussionMessage, Discussion.id == DiscussionMessage.discussion_id)
+        count_query = count_query.join(Message, DiscussionMessage.message_id == Message.id).filter(Message.room_id == room_id)
     total = count_query.scalar() or 0
     
     return {
@@ -479,20 +491,29 @@ async def list_discussions(
     page_size: int = Query(20, ge=1, le=100),
     topic_id: Optional[int] = Query(None, description="Filter by topic ID"),
     date: Optional[str] = Query(None, description="Filter by date (YYYY-MM-DD)"),
+    room_id: Optional[int] = Query(None, description="Filter by room ID"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """List all detected discussions, optionally filtered by topic and/or date."""
+    """List all detected discussions, optionally filtered by topic, date, and/or room."""
     from sqlalchemy import cast, Date
     
     # Base query
     query = db.query(Discussion)
-    count_query = db.query(func.count(Discussion.id))
+    count_query = db.query(func.count(func.distinct(Discussion.id)))
     
     # Apply topic filter if specified
     if topic_id is not None:
         query = query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
         count_query = count_query.join(DiscussionTopic).filter(DiscussionTopic.topic_id == topic_id)
+    
+    # Apply room filter if specified (discussions that have messages in this room)
+    if room_id is not None:
+        if topic_id is None:
+            query = query.join(DiscussionMessage, Discussion.id == DiscussionMessage.discussion_id)
+            count_query = count_query.join(DiscussionMessage, Discussion.id == DiscussionMessage.discussion_id)
+        query = query.join(Message, DiscussionMessage.message_id == Message.id).filter(Message.room_id == room_id)
+        count_query = count_query.join(Message, DiscussionMessage.message_id == Message.id).filter(Message.room_id == room_id)
     
     # Apply date filter if specified
     if date is not None:
@@ -502,6 +523,9 @@ async def list_discussions(
     total = count_query.scalar() or 0
     
     offset = (page - 1) * page_size
+    # Use distinct when room_id filter is applied (due to joins through messages)
+    if room_id is not None:
+        query = query.distinct()
     discussions = (
         query
         .order_by(desc(Discussion.started_at))

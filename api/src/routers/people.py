@@ -6,7 +6,7 @@ from typing import Optional, Literal
 from datetime import datetime, timedelta
 import logging
 
-from ..db import get_db, Person, Message
+from ..db import get_db, Person, Message, Room, RoomMember
 from ..auth import get_current_session
 from ..schemas.person import PersonResponse, PersonListResponse, PersonUpdate
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
@@ -23,44 +23,77 @@ STALE_THRESHOLD = 30  # Messages since last summary before considered stale
 @router.get("", response_model=PersonListResponse)
 async def list_people(
     search: Optional[str] = None,
+    room_id: Optional[int] = Query(None, description="Filter by room membership"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """List all people with message counts."""
-    # Subquery for message counts
-    message_count_subq = (
-        db.query(
-            Message.sender_id,
-            func.count(Message.id).label("message_count"),
-            func.max(Message.timestamp).label("last_message_at")
+    """List all people with message counts. Optionally filter by room membership."""
+    
+    if room_id is not None:
+        # When filtering by room, use room_members table for accurate per-room stats
+        query = (
+            db.query(
+                Person,
+                RoomMember.message_count,
+                RoomMember.last_seen_at
+            )
+            .join(RoomMember, Person.id == RoomMember.person_id)
+            .filter(RoomMember.room_id == room_id)
         )
-        .group_by(Message.sender_id)
-        .subquery()
-    )
-    
-    query = (
-        db.query(Person, message_count_subq.c.message_count, message_count_subq.c.last_message_at)
-        .outerjoin(message_count_subq, Person.id == message_count_subq.c.sender_id)
-    )
-    
-    if search:
-        query = query.filter(Person.display_name.ilike(f"%{search}%"))
-    
-    results = query.order_by(desc(func.coalesce(message_count_subq.c.message_count, 0))).all()
-    
-    people = []
-    for person, message_count, last_message_at in results:
-        people.append(PersonResponse(
-            id=person.id,
-            matrix_user_id=person.matrix_user_id,
-            display_name=person.display_name,
-            avatar_url=person.avatar_url,
-            fb_profile_url=person.fb_profile_url,
-            notes=person.notes,
-            message_count=message_count or 0,
-            last_message_at=last_message_at,
-            created_at=person.created_at
-        ))
+        
+        if search:
+            query = query.filter(Person.display_name.ilike(f"%{search}%"))
+        
+        results = query.order_by(desc(RoomMember.message_count)).all()
+        
+        people = []
+        for person, message_count, last_message_at in results:
+            people.append(PersonResponse(
+                id=person.id,
+                matrix_user_id=person.matrix_user_id,
+                display_name=person.display_name,
+                avatar_url=person.avatar_url,
+                fb_profile_url=person.fb_profile_url,
+                notes=person.notes,
+                message_count=message_count or 0,
+                last_message_at=last_message_at,
+                created_at=person.created_at
+            ))
+    else:
+        # No room filter - show all people with global message counts
+        message_count_subq = (
+            db.query(
+                Message.sender_id,
+                func.count(Message.id).label("message_count"),
+                func.max(Message.timestamp).label("last_message_at")
+            )
+            .group_by(Message.sender_id)
+            .subquery()
+        )
+        
+        query = (
+            db.query(Person, message_count_subq.c.message_count, message_count_subq.c.last_message_at)
+            .outerjoin(message_count_subq, Person.id == message_count_subq.c.sender_id)
+        )
+        
+        if search:
+            query = query.filter(Person.display_name.ilike(f"%{search}%"))
+        
+        results = query.order_by(desc(func.coalesce(message_count_subq.c.message_count, 0))).all()
+        
+        people = []
+        for person, message_count, last_message_at in results:
+            people.append(PersonResponse(
+                id=person.id,
+                matrix_user_id=person.matrix_user_id,
+                display_name=person.display_name,
+                avatar_url=person.avatar_url,
+                fb_profile_url=person.fb_profile_url,
+                notes=person.notes,
+                message_count=message_count or 0,
+                last_message_at=last_message_at,
+                created_at=person.created_at
+            ))
     
     return PersonListResponse(people=people, total=len(people))
 
@@ -154,20 +187,65 @@ async def update_person(
     )
 
 
+@router.get("/{person_id}/rooms")
+async def get_person_rooms(
+    person_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get all rooms a person is in, with per-room stats."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    # Get room memberships with room details
+    memberships = (
+        db.query(RoomMember, Room)
+        .join(Room, RoomMember.room_id == Room.id)
+        .filter(RoomMember.person_id == person_id)
+        .order_by(desc(RoomMember.message_count))
+        .all()
+    )
+    
+    rooms = []
+    for membership, room in memberships:
+        rooms.append({
+            "room_id": room.id,
+            "room_name": room.name,
+            "avatar_url": room.avatar_url,
+            "message_count": membership.message_count or 0,
+            "first_seen_at": membership.first_seen_at.isoformat() if membership.first_seen_at else None,
+            "last_seen_at": membership.last_seen_at.isoformat() if membership.last_seen_at else None,
+        })
+    
+    # Calculate total messages across all rooms
+    total_messages = sum(r["message_count"] for r in rooms)
+    
+    return {
+        "person_id": person_id,
+        "rooms": rooms,
+        "total_rooms": len(rooms),
+        "total_messages": total_messages
+    }
+
+
 @router.get("/{person_id}/messages", response_model=MessageListResponse)
 async def get_person_messages(
     person_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    room_id: Optional[int] = Query(None, description="Filter by room ID"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Get messages from a specific person."""
+    """Get messages from a specific person, optionally filtered by room."""
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
     
     query = db.query(Message).filter(Message.sender_id == person_id)
+    if room_id is not None:
+        query = query.filter(Message.room_id == room_id)
     total = query.count()
     
     offset = (page - 1) * page_size

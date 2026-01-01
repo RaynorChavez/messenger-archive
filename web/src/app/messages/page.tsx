@@ -7,6 +7,7 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { messages, people, type Message, type MessageListResponse, type PersonFull, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { CornerDownRight, X, ArrowLeft } from "lucide-react";
+import { useRoom } from "@/contexts/room-context";
 
 function Avatar({ url, name }: { url: string | null | undefined; name: string | null | undefined }) {
   const avatarUrl = mxcToHttp(url);
@@ -34,6 +35,7 @@ function Avatar({ url, name }: { url: string | null | undefined; name: string | 
 function MessagesContent() {
   const searchParams = useSearchParams();
   const senderId = searchParams.get("sender_id");
+  const { currentRoom } = useRoom();
   
   const [data, setData] = useState<MessageListResponse | null>(null);
   const [page, setPage] = useState(1);
@@ -50,20 +52,23 @@ function MessagesContent() {
     }
   }, [senderId]);
 
-  // Reset page when sender changes
+  // Reset page when sender or room changes
   useEffect(() => {
     setPage(1);
-  }, [senderId]);
+  }, [senderId, currentRoom?.id]);
 
   useEffect(() => {
     async function load() {
       try {
-        const params: { page: number; page_size: number; sender_id?: number } = { 
+        const params: { page: number; page_size: number; sender_id?: number; room_id?: number } = { 
           page, 
           page_size: 50 
         };
         if (senderId) {
           params.sender_id = Number(senderId);
+        }
+        if (currentRoom?.id) {
+          params.room_id = currentRoom.id;
         }
         const result = await messages.list(params);
         setData(result);
@@ -75,7 +80,7 @@ function MessagesContent() {
       }
     }
     load();
-  }, [page, senderId]);
+  }, [page, senderId, currentRoom?.id]);
 
   if (loading) {
     return (

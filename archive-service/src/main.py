@@ -228,10 +228,11 @@ class ArchiveClient:
     async def message_callback(self, room: MatrixRoom, event: RoomMessageText):
         """Handle incoming text messages."""
         try:
-            # Filter by room name if configured
-            if settings.archive_room_filter:
-                room_name = room.display_name or ""
-                if settings.archive_room_filter.lower() not in room_name.lower():
+            # Filter by room name if configured (exact match)
+            room_filters = settings.get_room_filters()
+            if room_filters:
+                room_name = (room.display_name or "").lower()
+                if room_name not in room_filters:
                     return  # Skip this room
             
             # Get sender's avatar URL from room member info

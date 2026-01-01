@@ -5,15 +5,18 @@ import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
 import { people, type PersonFull, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
+import { useRoom } from "@/contexts/room-context";
 
 export default function PeoplePage() {
   const [data, setData] = useState<PersonFull[]>([]);
   const [loading, setLoading] = useState(true);
+  const { currentRoom } = useRoom();
 
   useEffect(() => {
     async function load() {
+      setLoading(true);
       try {
-        const result = await people.list();
+        const result = await people.list(undefined, currentRoom?.id);
         setData(result.people);
       } catch (error) {
         console.error("Failed to load people:", error);
@@ -22,7 +25,7 @@ export default function PeoplePage() {
       }
     }
     load();
-  }, []);
+  }, [currentRoom?.id]);
 
   if (loading) {
     return (

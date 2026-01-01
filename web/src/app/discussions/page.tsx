@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag, Search, X, RefreshCw, ChevronDown } from "lucide-react";
+import { useRoom } from "@/contexts/room-context";
 
 function TopicPill({ topic, selected, onClick }: { topic: TopicBrief | null; selected: boolean; onClick: () => void }) {
   const isAll = topic === null;
@@ -95,6 +96,9 @@ export default function DiscussionsPage() {
   const [isSearching, setIsSearching] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
+  // Room context
+  const { currentRoom } = useRoom();
+
   // Virtualization
   const parentRef = useRef<HTMLDivElement>(null);
   const analysisMenuRef = useRef<HTMLDivElement>(null);
@@ -116,9 +120,9 @@ export default function DiscussionsPage() {
     };
   }, [showAnalysisMenu]);
 
-  const loadDiscussions = useCallback(async (topicId?: number | null, date?: string | null, page: number = 1, append: boolean = false) => {
+  const loadDiscussions = useCallback(async (topicId?: number | null, date?: string | null, page: number = 1, append: boolean = false, roomId?: number) => {
     try {
-      const params: { topic_id?: number; date?: string; page?: number; page_size?: number } = {
+      const params: { topic_id?: number; date?: string; page?: number; page_size?: number; room_id?: number } = {
         page,
         page_size: 50,
       };
@@ -127,6 +131,9 @@ export default function DiscussionsPage() {
       }
       if (date !== null && date !== undefined) {
         params.date = date;
+      }
+      if (roomId !== undefined) {
+        params.room_id = roomId;
       }
       const result = await discussions.list(params);
       
@@ -184,11 +191,14 @@ export default function DiscussionsPage() {
     }
   }, []);
 
-  const loadTimeline = useCallback(async (topicId?: number | null) => {
+  const loadTimeline = useCallback(async (topicId?: number | null, roomId?: number) => {
     try {
-      const params: { topic_id?: number } = {};
+      const params: { topic_id?: number; room_id?: number } = {};
       if (topicId !== null && topicId !== undefined) {
         params.topic_id = topicId;
+      }
+      if (roomId !== undefined) {
+        params.room_id = roomId;
       }
       const result = await discussions.timeline(params);
       setTimeline(result.timeline);
@@ -200,9 +210,10 @@ export default function DiscussionsPage() {
 
   useEffect(() => {
     async function load() {
+      const roomId = currentRoom?.id;
       await Promise.all([
-        loadDiscussions(),
-        loadTimeline(),
+        loadDiscussions(null, null, 1, false, roomId),
+        loadTimeline(null, roomId),
         loadStatus(),
         loadTopics(),
         loadTopicClassificationStatus(),
@@ -211,14 +222,14 @@ export default function DiscussionsPage() {
       setLoading(false);
     }
     load();
-  }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus, loadAnalysisPreview]);
+  }, [loadDiscussions, loadTimeline, loadStatus, loadTopics, loadTopicClassificationStatus, loadAnalysisPreview, currentRoom?.id]);
 
-  // Reload discussions when topic or date filter changes
+  // Reload discussions when topic, date, or room filter changes
   useEffect(() => {
     if (!loading && !searchQuery) {
-      loadDiscussions(selectedTopicId, selectedDate);
+      loadDiscussions(selectedTopicId, selectedDate, 1, false, currentRoom?.id);
     }
-  }, [selectedTopicId, selectedDate, loadDiscussions, loading, searchQuery]);
+  }, [selectedTopicId, selectedDate, loadDiscussions, loading, searchQuery, currentRoom?.id]);
 
   // Search effect with debounce via useDeferredValue
   useEffect(() => {
@@ -251,12 +262,12 @@ export default function DiscussionsPage() {
     performSearch();
   }, [deferredSearchQuery, selectedTopicId]);
 
-  // Reload timeline when topic filter changes (not date - timeline shows all dates)
+  // Reload timeline when topic or room filter changes (not date - timeline shows all dates)
   useEffect(() => {
     if (!loading) {
-      loadTimeline(selectedTopicId);
+      loadTimeline(selectedTopicId, currentRoom?.id);
     }
-  }, [selectedTopicId, loadTimeline, loading]);
+  }, [selectedTopicId, loadTimeline, loading, currentRoom?.id]);
 
   // Poll for status and discussions while analysis is running
   useEffect(() => {
@@ -264,9 +275,10 @@ export default function DiscussionsPage() {
 
     const interval = setInterval(async () => {
       const status = await loadStatus();
+      const roomId = currentRoom?.id;
       await Promise.all([
-        loadDiscussions(selectedTopicId, selectedDate),
-        loadTimeline(selectedTopicId),
+        loadDiscussions(selectedTopicId, selectedDate, 1, false, roomId),
+        loadTimeline(selectedTopicId, roomId),
       ]);
       // Reload preview when analysis completes
       if (status?.status === "completed") {
@@ -275,7 +287,7 @@ export default function DiscussionsPage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId, selectedDate, loadAnalysisPreview]);
+  }, [analysisStatus?.status, loadStatus, loadDiscussions, loadTimeline, selectedTopicId, selectedDate, loadAnalysisPreview, currentRoom?.id]);
 
   // Poll for topic classification status
   useEffect(() => {
@@ -284,12 +296,13 @@ export default function DiscussionsPage() {
     const interval = setInterval(async () => {
       const status = await loadTopicClassificationStatus();
       if (status?.status === "completed") {
-        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId, selectedDate), loadTimeline(selectedTopicId)]);
+        const roomId = currentRoom?.id;
+        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId, selectedDate, 1, false, roomId), loadTimeline(selectedTopicId, roomId)]);
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId, selectedDate]);
+  }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId, selectedDate, currentRoom?.id]);
 
   const handleStartAnalysis = async (mode: "incremental" | "full" = "incremental") => {
     setStartingAnalysis(true);
@@ -324,11 +337,11 @@ export default function DiscussionsPage() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      await loadDiscussions(selectedTopicId, selectedDate, currentPage + 1, true);
+      await loadDiscussions(selectedTopicId, selectedDate, currentPage + 1, true, currentRoom?.id);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, loadDiscussions, selectedTopicId, selectedDate, currentPage]);
+  }, [loadingMore, hasMore, loadDiscussions, selectedTopicId, selectedDate, currentPage, currentRoom?.id]);
 
   // Virtualizer for discussions list
   const rowVirtualizer = useVirtualizer({

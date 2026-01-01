@@ -44,6 +44,51 @@ async function fetchAPI<T>(endpoint: string, options: FetchOptions = {}): Promis
   return response.json();
 }
 
+// Rooms
+export interface RoomListItem {
+  id: number;
+  name: string | null;
+  avatar_url: string | null;
+  description: string | null;
+  message_count: number;
+  member_count: number;
+  last_message_at: string | null;
+  display_order: number;
+}
+
+export interface RoomDetail extends RoomListItem {
+  matrix_room_id: string;
+  is_group: boolean;
+  first_message_at: string | null;
+  created_at: string;
+}
+
+export interface RoomListResponse {
+  rooms: RoomListItem[];
+}
+
+export interface PersonRoomStats {
+  room_id: number;
+  room_name: string | null;
+  avatar_url: string | null;
+  message_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface PersonRoomsResponse {
+  person_id: number;
+  rooms: PersonRoomStats[];
+  total_rooms: number;
+  total_messages: number;
+}
+
+export const rooms = {
+  list: () => fetchAPI<RoomListResponse>("/rooms"),
+  get: (id: number) => fetchAPI<RoomDetail>(`/rooms/${id}`),
+  first: () => fetchAPI<RoomDetail>("/rooms/first"),
+};
+
 // Auth
 export const auth = {
   login: (password: string) =>
@@ -90,13 +135,14 @@ export const messages = {
     page_size?: number;
     sender_id?: number;
     search?: string;
+    room_id?: number;
   }) => fetchAPI<MessageListResponse>("/messages", { params }),
 
   get: (id: number) => fetchAPI<Message>(`/messages/${id}`),
 
-  search: (q: string, page?: number) =>
+  search: (q: string, page?: number, room_id?: number) =>
     fetchAPI<MessageListResponse>("/messages/search", {
-      params: { q, page },
+      params: { q, page, room_id },
     }),
 };
 
@@ -152,8 +198,8 @@ export interface PeopleListResponse {
 }
 
 export const people = {
-  list: (search?: string) =>
-    fetchAPI<PeopleListResponse>("/people", { params: { search } }),
+  list: (search?: string, room_id?: number) =>
+    fetchAPI<PeopleListResponse>("/people", { params: { search, room_id } }),
 
   get: (id: number) => fetchAPI<PersonFull>(`/people/${id}`),
 
@@ -163,10 +209,13 @@ export const people = {
       body: JSON.stringify({ notes }),
     }),
 
-  messages: (id: number, page?: number) =>
+  messages: (id: number, page?: number, room_id?: number) =>
     fetchAPI<MessageListResponse>(`/people/${id}/messages`, {
-      params: { page },
+      params: { page, room_id },
     }),
+
+  rooms: (id: number) =>
+    fetchAPI<PersonRoomsResponse>(`/people/${id}/rooms`),
 
   generateSummary: async (id: number): Promise<PersonFull> => {
     const response = await fetch(`${API_URL}/api/people/${id}/generate-summary`, {
@@ -233,8 +282,8 @@ export interface ThreadListResponse {
 }
 
 export const threads = {
-  list: (page?: number) =>
-    fetchAPI<ThreadListResponse>("/threads", { params: { page } }),
+  list: (page?: number, room_id?: number) =>
+    fetchAPI<ThreadListResponse>("/threads", { params: { page, room_id } }),
 
   get: (id: number) => fetchAPI<Thread>(`/threads/${id}`),
 };
@@ -253,9 +302,9 @@ export interface Stats {
 }
 
 export const stats = {
-  get: () => fetchAPI<Stats>("/stats"),
-  recent: (limit?: number) =>
-    fetchAPI<Message[]>("/stats/recent", { params: { limit } }),
+  get: (room_id?: number) => fetchAPI<Stats>("/stats", { params: { room_id } }),
+  recent: (limit?: number, room_id?: number) =>
+    fetchAPI<Message[]>("/stats/recent", { params: { limit, room_id } }),
 };
 
 // Settings
@@ -525,9 +574,9 @@ export interface ReindexStatus {
 }
 
 export const search = {
-  query: (q: string, scope?: SearchScope, page?: number, pageSize?: number) =>
+  query: (q: string, scope?: SearchScope, page?: number, pageSize?: number, roomId?: number) =>
     fetchAPI<SearchResults>("/search", {
-      params: { q, scope, page, page_size: pageSize },
+      params: { q, scope, page, page_size: pageSize, room_id: roomId },
     }),
 
   reindex: (scope?: SearchScope) =>
@@ -608,7 +657,7 @@ export const virtualChat = {
 };
 
 export const discussions = {
-  list: (params?: { page?: number; page_size?: number; topic_id?: number; date?: string }) =>
+  list: (params?: { page?: number; page_size?: number; topic_id?: number; date?: string; room_id?: number }) =>
     fetchAPI<DiscussionListResponse>("/discussions", { params }),
 
   get: (id: number) => fetchAPI<DiscussionFull>(`/discussions/${id}`),
@@ -626,7 +675,7 @@ export const discussions = {
       params: { after_message_id: afterMessageId, before_message_id: beforeMessageId },
     }),
 
-  timeline: (params?: { topic_id?: number }) =>
+  timeline: (params?: { topic_id?: number; room_id?: number }) =>
     fetchAPI<TimelineResponse>("/discussions/timeline", { params }),
 
   analyze: (mode: "incremental" | "full" = "incremental") =>

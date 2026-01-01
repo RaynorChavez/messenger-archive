@@ -15,6 +15,7 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 async def list_messages(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    room_id: Optional[int] = None,
     sender_id: Optional[int] = None,
     search: Optional[str] = None,
     start_date: Optional[datetime] = None,
@@ -26,6 +27,8 @@ async def list_messages(
     query = db.query(Message).join(Person, Message.sender_id == Person.id, isouter=True)
     
     # Apply filters
+    if room_id:
+        query = query.filter(Message.room_id == room_id)
     if sender_id:
         query = query.filter(Message.sender_id == sender_id)
     if search:
@@ -84,6 +87,7 @@ async def list_messages(
 @router.get("/search")
 async def search_messages(
     q: str = Query(..., min_length=1),
+    room_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -94,6 +98,9 @@ async def search_messages(
     query = db.query(Message).filter(
         func.to_tsvector('english', Message.content).match(q)
     )
+    
+    if room_id:
+        query = query.filter(Message.room_id == room_id)
     
     total = query.count()
     offset = (page - 1) * page_size

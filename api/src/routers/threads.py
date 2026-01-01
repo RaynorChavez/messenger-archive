@@ -5,7 +5,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
-from ..db import get_db, Message, Person
+from ..db import get_db, Message, Person, Room
 from ..auth import get_current_session
 from ..schemas.message import PersonBrief
 
@@ -46,6 +46,7 @@ class ThreadListResponse(BaseModel):
 async def list_threads(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
+    room_id: Optional[int] = Query(None, description="Filter by room ID"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
@@ -56,21 +57,21 @@ async def list_threads(
     offset = (page - 1) * page_size
     
     # Get messages that have replies (these are thread roots)
-    reply_to_ids = (
-        db.query(Message.reply_to_message_id)
-        .filter(Message.reply_to_message_id.isnot(None))
-        .distinct()
-        .all()
-    )
+    reply_query = db.query(Message.reply_to_message_id).filter(Message.reply_to_message_id.isnot(None))
+    if room_id is not None:
+        reply_query = reply_query.filter(Message.room_id == room_id)
+    reply_to_ids = reply_query.distinct().all()
     reply_to_ids = [r[0] for r in reply_to_ids]
     
     if not reply_to_ids:
         return ThreadListResponse(threads=[], total=0, page=page, page_size=page_size)
     
     # Get the root messages
+    root_query = db.query(Message).filter(Message.id.in_(reply_to_ids))
+    if room_id is not None:
+        root_query = root_query.filter(Message.room_id == room_id)
     root_msgs = (
-        db.query(Message)
-        .filter(Message.id.in_(reply_to_ids))
+        root_query
         .order_by(desc(Message.timestamp))
         .offset(offset)
         .limit(page_size)

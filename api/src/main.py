@@ -16,6 +16,7 @@ from .routers import (
     discussions_router,
     search_router,
     virtual_chat_router,
+    rooms_router,
 )
 from .services.ai import init_ai_service
 from .services.embeddings import init_embedding_service
@@ -74,6 +75,7 @@ app.include_router(database_router, prefix="/api")
 app.include_router(discussions_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(virtual_chat_router, prefix="/api")
+app.include_router(rooms_router, prefix="/api")
 
 
 @app.get("/api/health")

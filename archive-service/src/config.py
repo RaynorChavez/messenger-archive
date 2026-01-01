@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
@@ -16,12 +16,18 @@ class Settings(BaseSettings):
     matrix_user_id: str = "@archive:archive.local"
     matrix_password: str = "archivepass123"
     
-    # Room name to archive (partial match, case-insensitive)
-    # Leave empty to archive all rooms
-    archive_room_filter: Optional[str] = "General Chat - Manila Dialectics Society"
+    # Room names to archive (exact match, case-insensitive)
+    # Comma-separated list. Leave empty to archive all rooms.
+    archive_room_filter: Optional[str] = "General Chat - Manila Dialectics Society,Immersion - Manila Dialectics Society"
     
     # API URL for embedding service
     api_url: str = "http://api:8000"
+    
+    def get_room_filters(self) -> List[str]:
+        """Get list of room name filters (exact match)."""
+        if not self.archive_room_filter:
+            return []
+        return [f.strip().lower() for f in self.archive_room_filter.split(",") if f.strip()]
 
 
 @lru_cache()
