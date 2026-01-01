@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { stats, type Stats, type Message } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
-import { mxcToHttp } from "@/lib/api";
 import { MessageSquare, GitBranch, Users } from "lucide-react";
 import {
   BarChart,
@@ -15,6 +14,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useRoom } from "@/contexts/room-context";
+import { Avatar } from "@/components/ui/avatar";
 
 function StatCard({
   title,
@@ -39,25 +39,13 @@ function StatCard({
 }
 
 function RecentMessage({ message }: { message: Message }) {
-  const avatarUrl = mxcToHttp(message.sender?.avatar_url);
-  
   return (
     <div className="flex items-start gap-3 py-3 border-b last:border-0">
-      {avatarUrl ? (
-        <img
-          src={avatarUrl}
-          alt={message.sender?.display_name || ""}
-          className="h-8 w-8 rounded-full object-cover bg-muted"
-          onError={(e) => {
-            // Fallback to initials on error
-            e.currentTarget.style.display = "none";
-            e.currentTarget.nextElementSibling?.classList.remove("hidden");
-          }}
-        />
-      ) : null}
-      <div className={`h-8 w-8 rounded-full bg-muted flex items-center justify-center text-sm font-medium flex-shrink-0 ${avatarUrl ? "hidden" : ""}`}>
-        {message.sender?.display_name?.[0] || "?"}
-      </div>
+      <Avatar 
+        src={message.sender?.avatar_url} 
+        name={message.sender?.display_name} 
+        size="md" 
+      />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-medium text-sm">

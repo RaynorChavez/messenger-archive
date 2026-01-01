@@ -4,33 +4,11 @@ import { useEffect, useState, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { messages, people, type Message, type MessageListResponse, type PersonFull, mxcToHttp } from "@/lib/api";
+import { messages, people, type Message, type MessageListResponse, type PersonFull } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { CornerDownRight, X, ArrowLeft } from "lucide-react";
 import { useRoom } from "@/contexts/room-context";
-
-function Avatar({ url, name }: { url: string | null | undefined; name: string | null | undefined }) {
-  const avatarUrl = mxcToHttp(url);
-  const initial = name?.[0] || "?";
-  
-  return (
-    <div className="relative h-10 w-10 shrink-0">
-      {avatarUrl && (
-        <img
-          src={avatarUrl}
-          alt={name || ""}
-          className="h-10 w-10 rounded-full object-cover bg-muted absolute inset-0"
-          onError={(e) => {
-            e.currentTarget.style.display = "none";
-          }}
-        />
-      )}
-      <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center text-sm font-medium">
-        {initial}
-      </div>
-    </div>
-  );
-}
+import { Avatar } from "@/components/ui/avatar";
 
 function MessagesContent() {
   const searchParams = useSearchParams();
@@ -133,7 +111,7 @@ function MessagesContent() {
           <div className="p-4 space-y-3">
             {data?.messages.map((msg) => (
               <div key={msg.id} className="flex items-start gap-3">
-                <Avatar url={msg.sender?.avatar_url} name={msg.sender?.display_name} />
+                <Avatar src={msg.sender?.avatar_url} name={msg.sender?.display_name} size="lg" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">

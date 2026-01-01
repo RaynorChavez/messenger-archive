@@ -6,6 +6,7 @@ import { threads, type Thread } from "@/lib/api";
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useRoom } from "@/contexts/room-context";
+import { Avatar } from "@/components/ui/avatar";
 
 export default function ThreadsPage() {
   const [data, setData] = useState<Thread[]>([]);
@@ -72,6 +73,11 @@ export default function ThreadsPage() {
                 ) : (
                   <ChevronRight className="h-5 w-5 mt-0.5 text-muted-foreground" />
                 )}
+                <Avatar 
+                  src={thread.started_by?.avatar_url} 
+                  name={thread.started_by?.display_name} 
+                  size="md" 
+                />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">
@@ -99,9 +105,11 @@ export default function ThreadsPage() {
                       className="py-2 flex gap-3"
                       style={{ paddingLeft: `${msg.depth * 24}px` }}
                     >
-                      <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-xs font-medium shrink-0">
-                        {msg.sender?.display_name?.[0] || "?"}
-                      </div>
+                      <Avatar 
+                        src={msg.sender?.avatar_url} 
+                        name={msg.sender?.display_name} 
+                        size="sm" 
+                      />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium">
