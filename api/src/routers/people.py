@@ -2,22 +2,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, extract
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from datetime import datetime, timedelta
 import logging
+import threading
 
-from ..db import get_db, Person, Message, Room, RoomMember
+from ..db import get_db, Person, Message, Room, RoomMember, SessionLocal
 from ..auth import get_current_session
 from ..schemas.person import PersonResponse, PersonListResponse, PersonUpdate
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
 from ..services.ai import get_ai_service, RateLimitExceeded
 from ..services.virtual_chat import get_persona_cache
+from ..config import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/people", tags=["people"])
 
 STALE_THRESHOLD = 30  # Messages since last summary before considered stale
+
+# Track summary generation status per person
+_summary_status: Dict[int, Dict[str, Any]] = {}
 
 
 @router.get("", response_model=PersonListResponse)
@@ -309,100 +314,200 @@ def _get_context_messages(db: Session, message_id: int, message_timestamp: datet
         return [(m.timestamp, m.display_name or "Unknown", m.content) for m in context]
 
 
-@router.post("/{person_id}/generate-summary", response_model=PersonResponse)
+@router.post("/{person_id}/generate-summary")
 async def generate_person_summary(
     person_id: int,
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Generate AI summary for a person based on their messages with conversation context."""
+    """Start AI summary generation for a person in background thread."""
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
     
-    # Fetch ALL messages from this person, ordered by timestamp
-    messages = (
-        db.query(Message.id, Message.timestamp, Message.content)
+    # Check if already generating
+    if person_id in _summary_status and _summary_status[person_id].get("status") == "running":
+        raise HTTPException(status_code=409, detail="Summary generation already in progress")
+    
+    # Count messages
+    message_count = (
+        db.query(func.count(Message.id))
         .filter(Message.sender_id == person_id)
         .filter(Message.content.isnot(None))
         .filter(Message.content != "")
-        .order_by(asc(Message.timestamp))
-        .all()
+        .scalar()
     )
     
-    if not messages:
+    if not message_count:
         raise HTTPException(status_code=400, detail="No messages found for this person")
     
-    # Build messages with context (5 before and 5 after each message)
-    messages_with_context = []
-    for msg in messages:
-        context_before = _get_context_messages(db, msg.id, msg.timestamp, count=5, direction="before")
-        context_after = _get_context_messages(db, msg.id, msg.timestamp, count=5, direction="after")
-        
-        messages_with_context.append({
-            "timestamp": msg.timestamp,
-            "content": msg.content,
-            "sender_name": person.display_name or "Unknown",
-            "is_target": True,
-            "context_before": context_before,
-            "context_after": context_after,
-        })
+    settings = get_settings()
+    if not settings.gemini_api_key:
+        raise HTTPException(status_code=500, detail="Gemini API key not configured")
+    
+    # Initialize status
+    _summary_status[person_id] = {
+        "status": "running",
+        "started_at": datetime.utcnow().isoformat(),
+        "message_count": message_count,
+        "error": None
+    }
+    
+    # Start generation in background thread
+    thread = threading.Thread(
+        target=_run_summary_generation,
+        args=(person_id, person.display_name, settings.database_url, settings.gemini_api_key),
+        daemon=True
+    )
+    thread.start()
+    
+    return {
+        "message": "Summary generation started",
+        "person_id": person_id,
+        "message_count": message_count
+    }
+
+
+@router.get("/{person_id}/generate-summary/status")
+async def get_summary_status(
+    person_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get status of summary generation for a person."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    status = _summary_status.get(person_id, {"status": "idle"})
+    
+    # Include current summary info
+    return {
+        **status,
+        "has_summary": person.ai_summary is not None,
+        "summary_generated_at": person.ai_summary_generated_at.isoformat() if person.ai_summary_generated_at else None
+    }
+
+
+def _get_context_messages_in_room(db: Session, room_id: int, message_timestamp: datetime, count: int = 5, direction: str = "before"):
+    """Get context messages before or after a given message, within the same room."""
+    if direction == "before":
+        context = (
+            db.query(Message.timestamp, Message.content, Person.display_name)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.room_id == room_id)
+            .filter(Message.timestamp < message_timestamp)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(desc(Message.timestamp))
+            .limit(count)
+            .all()
+        )
+        return [(m.timestamp, m.display_name or "Unknown", m.content) for m in reversed(context)]
+    else:
+        context = (
+            db.query(Message.timestamp, Message.content, Person.display_name)
+            .outerjoin(Person, Message.sender_id == Person.id)
+            .filter(Message.room_id == room_id)
+            .filter(Message.timestamp > message_timestamp)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(asc(Message.timestamp))
+            .limit(count)
+            .all()
+        )
+        return [(m.timestamp, m.display_name or "Unknown", m.content) for m in context]
+
+
+def _run_summary_generation(person_id: int, person_name: str, database_url: str, gemini_api_key: str):
+    """Run summary generation in background thread."""
+    import asyncio
+    from ..services.ai import AIService
+    
+    db = SessionLocal()
     
     try:
-        ai_service = get_ai_service()
-        summary = await ai_service.generate_profile_summary_with_context(
-            person_name=person.display_name or "Unknown",
-            messages_with_context=messages_with_context
+        logger.info(f"Starting background summary generation for person {person_id} ({person_name})")
+        
+        # Fetch messages with room info
+        messages = (
+            db.query(Message.id, Message.timestamp, Message.content, Message.room_id, Room.name.label("room_name"))
+            .outerjoin(Room, Message.room_id == Room.id)
+            .filter(Message.sender_id == person_id)
+            .filter(Message.content.isnot(None))
+            .filter(Message.content != "")
+            .order_by(asc(Message.timestamp))
+            .all()
         )
+        
+        # Build messages with context, including room info
+        messages_with_context = []
+        for msg in messages:
+            room_id = msg.room_id or 0
+            # Get context from same room
+            context_before = _get_context_messages_in_room(db, room_id, msg.timestamp, count=5, direction="before") if room_id else []
+            context_after = _get_context_messages_in_room(db, room_id, msg.timestamp, count=5, direction="after") if room_id else []
+            
+            # Shorten room name
+            room_name = msg.room_name or "Unknown Room"
+            short_room_name = room_name.replace(" - Manila Dialectics Society", "")
+            
+            messages_with_context.append({
+                "timestamp": msg.timestamp,
+                "content": msg.content,
+                "sender_name": person_name or "Unknown",
+                "room_name": short_room_name,
+                "is_target": True,
+                "context_before": context_before,
+                "context_after": context_after,
+            })
+        
+        # Create AI service and generate summary
+        ai_service = AIService(gemini_api_key)
+        
+        # Run async function in new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            summary = loop.run_until_complete(
+                ai_service.generate_profile_summary_with_context(
+                    person_name=person_name or "Unknown",
+                    messages_with_context=messages_with_context
+                )
+            )
+        finally:
+            loop.close()
         
         # Update person record
-        person.ai_summary = summary
-        person.ai_summary_generated_at = datetime.utcnow()
-        person.ai_summary_message_count = len(messages)
-        db.commit()
-        db.refresh(person)
+        person = db.query(Person).filter(Person.id == person_id).first()
+        if person:
+            person.ai_summary = summary
+            person.ai_summary_generated_at = datetime.utcnow()
+            person.ai_summary_message_count = len(messages)
+            db.commit()
+            
+            # Invalidate persona cache
+            get_persona_cache().invalidate(person_id)
         
-        # Invalidate persona cache since profile changed
-        get_persona_cache().invalidate(person_id)
+        _summary_status[person_id] = {
+            "status": "completed",
+            "completed_at": datetime.utcnow().isoformat(),
+            "message_count": len(messages),
+            "error": None
+        }
         
-        logger.info(f"Generated AI summary for person {person_id} ({person.display_name})")
+        logger.info(f"Completed summary generation for person {person_id} ({person_name})")
         
-    except RateLimitExceeded as e:
-        return JSONResponse(
-            status_code=429,
-            content={
-                "detail": f"Rate limit exceeded. Try again in {e.retry_after:.0f} seconds.",
-                "retry_after": e.retry_after
-            }
-        )
     except Exception as e:
         logger.error(f"Error generating summary for person {person_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
+        _summary_status[person_id] = {
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.utcnow().isoformat()
+        }
     
-    # Get message stats for response
-    stats = (
-        db.query(
-            func.count(Message.id).label("count"),
-            func.max(Message.timestamp).label("last_at")
-        )
-        .filter(Message.sender_id == person_id)
-        .first()
-    )
-    
-    return PersonResponse(
-        id=person.id,
-        matrix_user_id=person.matrix_user_id,
-        display_name=person.display_name,
-        avatar_url=person.avatar_url,
-        fb_profile_url=person.fb_profile_url,
-        notes=person.notes,
-        message_count=stats.count or 0,
-        last_message_at=stats.last_at,
-        created_at=person.created_at,
-        ai_summary=person.ai_summary,
-        ai_summary_generated_at=person.ai_summary_generated_at,
-        ai_summary_stale=False  # Just generated, not stale
-    )
+    finally:
+        db.close()
 
 
 @router.get("/{person_id}/activity")

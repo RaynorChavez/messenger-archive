@@ -217,7 +217,7 @@ export const people = {
   rooms: (id: number) =>
     fetchAPI<PersonRoomsResponse>(`/people/${id}/rooms`),
 
-  generateSummary: async (id: number): Promise<PersonFull> => {
+  generateSummary: async (id: number): Promise<{ message: string; person_id: number; message_count: number }> => {
     const response = await fetch(`${API_URL}/api/people/${id}/generate-summary`, {
       method: "POST",
       credentials: "include",
@@ -231,6 +231,9 @@ export const people = {
         const error: GenerateSummaryError = await response.json();
         throw new Error(`Rate limited. Try again in ${Math.ceil(error.retry_after || 60)} seconds.`);
       }
+      if (response.status === 409) {
+        throw new Error("Summary generation already in progress");
+      }
       if (response.status === 401) {
         if (typeof window !== "undefined") {
           window.location.href = "/login";
@@ -242,6 +245,17 @@ export const people = {
 
     return response.json();
   },
+
+  summaryStatus: (id: number) =>
+    fetchAPI<{
+      status: "idle" | "running" | "completed" | "failed";
+      started_at?: string;
+      completed_at?: string;
+      message_count?: number;
+      error?: string;
+      has_summary: boolean;
+      summary_generated_at?: string;
+    }>(`/people/${id}/generate-summary/status`),
 
   activity: (
     id: number,

@@ -149,53 +149,67 @@ Messages with context:
         messages_with_context: list[dict],
         person_name: str
     ) -> str:
-        """Format messages with conversation context for the prompt.
+        """Format messages with conversation context for the prompt, grouped by room.
         
         Args:
             messages_with_context: List of dicts with keys:
                 - timestamp: datetime
                 - content: str
                 - sender_name: str
+                - room_name: str (optional - name of the chat room)
                 - is_target: bool (True if this is the person we're profiling)
                 - context_before: list of (timestamp, sender_name, content)
                 - context_after: list of (timestamp, sender_name, content)
             person_name: Name of the person being profiled
             
         Returns:
-            Formatted string of messages with context
+            Formatted string of messages with context, grouped by room
         """
-        sections = []
+        # Group messages by room
+        messages_by_room: dict[str, list] = {}
+        for msg in messages_with_context:
+            room_name = msg.get("room_name", "Unknown Room")
+            if room_name not in messages_by_room:
+                messages_by_room[room_name] = []
+            messages_by_room[room_name].append(msg)
         
-        for i, msg in enumerate(messages_with_context):
-            lines = []
-            lines.append(f"--- Message {i+1} ---")
-            
-            # Context before
-            if msg.get("context_before"):
-                lines.append("  [Context before:]")
-                for ts, sender, content in msg["context_before"]:
-                    ts_str = ts.strftime("%Y-%m-%d %H:%M")
-                    content_short = content[:300] + "..." if len(content) > 300 else content
-                    lines.append(f"    [{ts_str}] {sender}: {content_short}")
-            
-            # The target person's message
-            ts_str = msg["timestamp"].strftime("%Y-%m-%d %H:%M")
-            content = msg["content"]
-            if len(content) > 500:
-                content = content[:500] + "..."
-            lines.append(f"  >>> [{ts_str}] {person_name}: {content}")
-            
-            # Context after
-            if msg.get("context_after"):
-                lines.append("  [Context after:]")
-                for ts, sender, content in msg["context_after"]:
-                    ts_str = ts.strftime("%Y-%m-%d %H:%M")
-                    content_short = content[:300] + "..." if len(content) > 300 else content
-                    lines.append(f"    [{ts_str}] {sender}: {content_short}")
-            
-            sections.append("\n".join(lines))
+        all_sections = []
         
-        return "\n\n".join(sections)
+        for room_name, room_messages in messages_by_room.items():
+            room_lines = [f"=== In {room_name} ==="]
+            
+            for i, msg in enumerate(room_messages):
+                lines = []
+                lines.append(f"--- Message {i+1} ---")
+                
+                # Context before
+                if msg.get("context_before"):
+                    lines.append("  [Context before:]")
+                    for ts, sender, content in msg["context_before"]:
+                        ts_str = ts.strftime("%Y-%m-%d %H:%M")
+                        content_short = content[:300] + "..." if len(content) > 300 else content
+                        lines.append(f"    [{ts_str}] {sender}: {content_short}")
+                
+                # The target person's message
+                ts_str = msg["timestamp"].strftime("%Y-%m-%d %H:%M")
+                content = msg["content"]
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                lines.append(f"  >>> [{ts_str}] {person_name}: {content}")
+                
+                # Context after
+                if msg.get("context_after"):
+                    lines.append("  [Context after:]")
+                    for ts, sender, content in msg["context_after"]:
+                        ts_str = ts.strftime("%Y-%m-%d %H:%M")
+                        content_short = content[:300] + "..." if len(content) > 300 else content
+                        lines.append(f"    [{ts_str}] {sender}: {content_short}")
+                
+                room_lines.append("\n".join(lines))
+            
+            all_sections.append("\n\n".join(room_lines))
+        
+        return "\n\n".join(all_sections)
     
     async def generate_profile_summary(
         self,

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from google import genai
 from google.genai import types
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 
 from ..db import Person, Message, VirtualConversation, VirtualParticipant, VirtualMessage
@@ -29,39 +29,46 @@ logger = logging.getLogger(__name__)
 # Persona Prompt Template
 # =============================================================================
 
-SYSTEM_INSTRUCTION = """You roleplay as a specific person in casual chat. Mimic EXACTLY how they write.
+SYSTEM_INSTRUCTION = """You are roleplaying as a specific person. Write EXACTLY like their example messages - nothing more, nothing less.
 
-The example messages show:
-- [PersonName]: = messages FROM the person you're roleplaying. COPY THIS STYLE.
-- [someone]: = messages from other people. IGNORE their style, only use for context.
+Messages labeled [PersonName]: are FROM the person you're playing. COPY THIS EXACTLY.
+Messages labeled [OtherName]: are other people. Context only.
 
-COPY THE PERSON'S STYLE:
-- Their spelling, punctuation, lowercase/uppercase, emoji habits
-- Their language mixing (English/Tagalog/etc) 
-- Their message length patterns - short for casual, long only when THEY go deep
-- Their slang, "lol", "haha", fragments - whatever THEY use
+COPY THEIR EXACT PATTERNS:
+- Length: short messages = short responses. Don't elaborate.
+- Spelling: "dont", "itll", "wut" - use their exact spelling habits
+- Vocabulary: use ONLY words that appear in their messages or simpler. NO fancy words they don't use.
+- Tone: if blunt, be blunt. if casual, be casual. if frustrated, show frustration directly.
 
-DO NOT:
-- Sound like an AI or formal assistant
-- Add "(edited)" or timestamps
-- Include "[Name]:" prefix in your response - that's just labeling in examples
-- Greet/welcome people robotically
-- Copy how [someone] messages are written - those are OTHER people
+BANNED - these make you sound like an AI:
+- "I appreciate..." "I understand..." "That's a great..." "From my perspective..."
+- Academic words they don't use (sublate, interlocutor, discourse, framework, etc)
+- Balanced "both sides" framing when they take clear stances
+- Softening language: "challenging" instead of "frustrating", "interesting" instead of "annoying"
+- Over-explaining or justifying opinions - just state them like they do
+- Long paragraphs when their messages are short
+- Proper grammar/spelling when they use casual spelling
 
-If nothing natural to say: [NO RESPONSE]
+MATCH THEIR ACTUAL BEHAVIOR:
+- If they say something is frustrating, say it's frustrating
+- If they're dismissive, be dismissive ("Well, you do you I suppose")
+- If they ask pointed questions, ask pointed questions
+- If they make direct claims without hedging, do the same
 
-OUTPUT: Just the message text, nothing else."""
+[NO RESPONSE] if nothing fits naturally.
 
-PERSONA_TEMPLATE = """You ARE {name} in a group chat.
+OUTPUT: Just the message. No labels, no meta."""
+
+PERSONA_TEMPLATE = """You ARE {name}. Match their writing EXACTLY - vocabulary, length, directness, everything.
 
 {summary}
 {notes_section}
-## {name}'s ACTUAL messages (copy this style):
+## How {name} ACTUALLY writes (copy this):
 
 {messages_with_context}
 
 ---
-Respond to the chat below AS {name}. Match their vibe exactly - casual or intellectual depending on topic."""
+Respond as {name}. Use their vocabulary, their sentence length, their level of directness. If they're blunt, be blunt. Don't clean up their style or make it more "proper"."""
 
 
 # =============================================================================
@@ -168,10 +175,13 @@ class PersonaBuilder:
         return display_name, context
     
     def _build_messages_with_context(self, person_id: int, person_name: str) -> str:
-        """Build all messages with 3 before/after context, deduplicated."""
+        """Build all messages with 3 before/after context, deduplicated, grouped by room."""
+        from ..db import Room
         
-        # Get all messages by this person, ordered by timestamp
-        person_messages = self.db.query(Message).filter(
+        # Get all messages by this person with room info, ordered by timestamp
+        person_messages = self.db.query(Message).options(
+            joinedload(Message.room)
+        ).filter(
             Message.sender_id == person_id,
             Message.content.isnot(None),
             Message.content != ""
@@ -180,43 +190,71 @@ class PersonaBuilder:
         if not person_messages:
             return "(No messages found)"
         
+        # Group messages by room
+        messages_by_room: Dict[int, List[Message]] = {}
+        for msg in person_messages:
+            room_id = msg.room_id or 0
+            if room_id not in messages_by_room:
+                messages_by_room[room_id] = []
+            messages_by_room[room_id].append(msg)
+        
+        # Get room names
+        room_names: Dict[int, str] = {}
+        for room_id in messages_by_room.keys():
+            if room_id:
+                room = self.db.query(Room).filter(Room.id == room_id).first()
+                room_names[room_id] = room.name if room else f"Room {room_id}"
+            else:
+                room_names[room_id] = "Unknown Room"
+        
+        # Format sections grouped by room
+        all_sections = []
         seen_context_ids: Set[int] = set()
-        formatted_sections = []
         
-        for i, msg in enumerate(person_messages):
-            # Get 3 messages before (excluding already-seen and self)
-            before = self.db.query(Message).filter(
-                Message.timestamp < msg.timestamp,
-                Message.id != msg.id,
-                Message.content.isnot(None),
-                Message.content != ""
-            ).order_by(Message.timestamp.desc()).limit(3).all()
-            before.reverse()  # Chronological order
+        for room_id, room_messages in messages_by_room.items():
+            room_name = room_names[room_id]
+            # Shorten room name
+            short_room_name = room_name.replace(" - Manila Dialectics Society", "")
             
-            # Filter out already-seen
-            before = [m for m in before if m.id not in seen_context_ids]
+            room_sections = []
+            room_sections.append(f"### In {short_room_name}:")
             
-            # Get 3 messages after
-            after = self.db.query(Message).filter(
-                Message.timestamp > msg.timestamp,
-                Message.id != msg.id,
-                Message.content.isnot(None),
-                Message.content != ""
-            ).order_by(Message.timestamp.asc()).limit(3).all()
+            for msg in room_messages:
+                # Get 3 messages before from SAME ROOM
+                before = self.db.query(Message).options(
+                    joinedload(Message.sender)
+                ).filter(
+                    Message.room_id == room_id,
+                    Message.timestamp < msg.timestamp,
+                    Message.id != msg.id,
+                    Message.content.isnot(None),
+                    Message.content != ""
+                ).order_by(Message.timestamp.desc()).limit(3).all()
+                before.reverse()
+                before = [m for m in before if m.id not in seen_context_ids]
+                
+                # Get 3 messages after from SAME ROOM
+                after = self.db.query(Message).options(
+                    joinedload(Message.sender)
+                ).filter(
+                    Message.room_id == room_id,
+                    Message.timestamp > msg.timestamp,
+                    Message.id != msg.id,
+                    Message.content.isnot(None),
+                    Message.content != ""
+                ).order_by(Message.timestamp.asc()).limit(3).all()
+                after = [m for m in after if m.id not in seen_context_ids]
+                
+                seen_context_ids.update(m.id for m in before)
+                seen_context_ids.update(m.id for m in after)
+                seen_context_ids.add(msg.id)
+                
+                section = self._format_message_section(msg, before, after, person_name)
+                room_sections.append(section)
             
-            # Filter out already-seen
-            after = [m for m in after if m.id not in seen_context_ids]
-            
-            # Mark all as seen (including the person's message)
-            seen_context_ids.update(m.id for m in before)
-            seen_context_ids.update(m.id for m in after)
-            seen_context_ids.add(msg.id)
-            
-            # Format this section
-            section = self._format_message_section(msg, before, after, person_name)
-            formatted_sections.append(section)
+            all_sections.append("\n\n".join(room_sections))
         
-        return "\n\n---\n\n".join(formatted_sections)
+        return "\n\n---\n\n".join(all_sections)
     
     def _format_message_section(
         self, 
@@ -227,26 +265,28 @@ class PersonaBuilder:
     ) -> str:
         """Format a single message with its context.
         
-        Only show the person's message prominently. Context from others
-        is shown generically to avoid style contamination.
+        Show the person's message prominently. Context from others
+        includes their actual names for better conversation understanding.
         """
         lines = []
         
-        # Context before (generic, don't copy their style)
+        # Context before (show actual names for context)
         if before:
             for m in before:
                 content = self._truncate(m.content, 200)
-                lines.append(f"[someone]: {content}")
+                sender_name = m.sender.display_name if m.sender else "Unknown"
+                lines.append(f"[{sender_name}]: {content}")
         
         # The person's message - THIS IS WHAT TO COPY
         content = self._truncate(msg.content, 500)
         lines.append(f"[{person_name}]: {content}")
         
-        # Context after (generic)
+        # Context after (show actual names for context)
         if after:
             for m in after:
                 content = self._truncate(m.content, 200)
-                lines.append(f"[someone]: {content}")
+                sender_name = m.sender.display_name if m.sender else "Unknown"
+                lines.append(f"[{sender_name}]: {content}")
         
         return "\n".join(lines)
     
@@ -419,7 +459,7 @@ class VirtualChatService:
                                 temperature=1.0,
                                 max_output_tokens=4096,
                                 thinking_config=types.ThinkingConfig(
-                                    thinking_budget=128
+                                    thinking_budget=1024
                                 ),
                             )
                         )

@@ -77,14 +77,41 @@ export default function PersonDetailPage() {
     setGeneratingSummary(true);
     setSummaryError(null);
     try {
-      const updated = await people.generateSummary(personId);
-      setPerson(updated);
+      await people.generateSummary(personId);
+      // Start polling for completion
+      pollSummaryStatus();
     } catch (error) {
       console.error("Failed to generate summary:", error);
       setSummaryError(error instanceof Error ? error.message : "Failed to generate summary");
-    } finally {
       setGeneratingSummary(false);
     }
+  };
+
+  const pollSummaryStatus = async () => {
+    const poll = async () => {
+      try {
+        const status = await people.summaryStatus(personId);
+        if (status.status === "completed") {
+          // Reload person data to get new summary
+          const updatedPerson = await people.get(personId);
+          setPerson(updatedPerson);
+          setGeneratingSummary(false);
+        } else if (status.status === "failed") {
+          setSummaryError(status.error || "Failed to generate summary");
+          setGeneratingSummary(false);
+        } else if (status.status === "running") {
+          // Continue polling
+          setTimeout(poll, 1000);
+        } else {
+          setGeneratingSummary(false);
+        }
+      } catch (error) {
+        console.error("Failed to check summary status:", error);
+        setSummaryError("Failed to check status");
+        setGeneratingSummary(false);
+      }
+    };
+    poll();
   };
 
   const handleStartChat = async () => {
