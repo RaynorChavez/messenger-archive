@@ -1,0 +1,34 @@
+{
+  "Rules": [
+    {
+      "ID": "DeleteOldDailyBackups",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "daily/"
+      },
+      "Expiration": {
+        "Days": 7
+      }
+    },
+    {
+      "ID": "DeleteOldWeeklyBackups",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "weekly/"
+      },
+      "Expiration": {
+        "Days": 30
+      }
+    },
+    {
+      "ID": "DeleteOldMonthlyBackups",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "monthly/"
+      },
+      "Expiration": {
+        "Days": 365
+      }
+    }
+  ]
+}

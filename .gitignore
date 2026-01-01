@@ -46,9 +46,16 @@ config/synapse/*.db
 config/synapse/*.signing.key
 config/synapse/*.log.config
 config/synapse/media_store/
+config/synapse/homeserver.yaml
 config/mautrix-meta/*.db
+config/mautrix-meta/config.yaml
 config/mautrix-meta/registration.yaml
+config/mautrix-meta/logs/
 
 # Secrets
 *.pem
 *.key
+
+# Backup files
+*.sql.gz
+*.sql

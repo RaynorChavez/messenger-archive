@@ -1,0 +1,21 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "d1f52edf2500593306f6344a1fb9aad496003b4e42e051ba7a876ea6c13ed618": {
+      "displayName": "messenger-archive-compute Template",
+      "source": {
+        "path": "messenger-archive-compute.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "952094707818-us-east-1-fb1e23b3": {
+          "bucketName": "cdk-hnb659fds-assets-952094707818-us-east-1",
+          "objectKey": "d1f52edf2500593306f6344a1fb9aad496003b4e42e051ba7a876ea6c13ed618.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::952094707818:role/cdk-hnb659fds-file-publishing-role-952094707818-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

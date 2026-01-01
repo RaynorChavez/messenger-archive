@@ -1,0 +1,220 @@
+# =============================================================================
+# Messenger Archive - Production Docker Compose
+# Optimized for AWS EC2 t3.micro (1GB RAM + 2GB swap)
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Reverse Proxy (Caddy - auto HTTPS)
+  # ===========================================================================
+  caddy:
+    image: caddy:2-alpine
+    container_name: archive-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - archive-network
+    depends_on:
+      - web
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+
+  # ===========================================================================
+  # Database - tuned for low memory
+  # ===========================================================================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: archive-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command:
+      - "postgres"
+      - "-c" 
+      - "shared_buffers=128MB"
+      - "-c"
+      - "effective_cache_size=256MB"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "max_connections=20"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 350M
+    # NOT exposed to host - internal only
+
+  # ===========================================================================
+  # Matrix Homeserver (Synapse) - Internal only
+  # ===========================================================================
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: archive-synapse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/synapse:/data
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 250M
+    # NOT exposed to host - internal only
+
+  # ===========================================================================
+  # Messenger Bridge (mautrix-meta) - Internal only
+  # ===========================================================================
+  mautrix-meta:
+    image: dock.mau.dev/mautrix/meta:latest
+    container_name: archive-mautrix-meta
+    restart: unless-stopped
+    depends_on:
+      - synapse
+      - postgres
+    volumes:
+      - ./config/mautrix-meta:/data
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+
+  # ===========================================================================
+  # Archive Service (Matrix event listener) - Internal only
+  # ===========================================================================
+  archive-service:
+    build:
+      context: ./archive-service
+      dockerfile: Dockerfile
+    container_name: archive-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      synapse:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MATRIX_HOMESERVER_URL: http://synapse:8008
+      MATRIX_USER_ID: "@archive:archive.local"
+      MATRIX_PASSWORD: "archivepass123"
+      ARCHIVE_ROOM_FILTER: ${ARCHIVE_ROOM_FILTER:-}
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+
+  # ===========================================================================
+  # API (FastAPI) - Internal only, accessed via Caddy
+  # ===========================================================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: archive-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      ARCHIVE_PASSWORD_HASH: ${ARCHIVE_PASSWORD_HASH}
+      SESSION_SECRET: ${SESSION_SECRET}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    # NOT exposed to host - accessed via Caddy
+
+  # ===========================================================================
+  # Web (Next.js) - Internal only, accessed via Caddy
+  # ===========================================================================
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    container_name: archive-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    # NOT exposed to host - accessed via Caddy
+
+  # ===========================================================================
+  # Element Web (Matrix client) - for re-login if needed
+  # NOT exposed via Caddy - access via SSH tunnel only:
+  #   ssh -L 8080:localhost:8080 ubuntu@your-server
+  #   Then open http://localhost:8080
+  # ===========================================================================
+  element:
+    image: vectorim/element-web:latest
+    container_name: archive-element
+    restart: unless-stopped
+    depends_on:
+      - synapse
+    volumes:
+      - ./config/element/config.json:/app/config.json:ro
+    ports:
+      - "127.0.0.1:8080:80"  # Only accessible from localhost (via SSH tunnel)
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+
+# Total memory limits: ~1.3GB (will use swap for overflow)
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  archive-network:
+    driver: bridge

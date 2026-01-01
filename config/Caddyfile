@@ -1,0 +1,32 @@
+# Caddyfile for Messenger Archive
+# DOMAIN env var should be set to your DuckDNS subdomain (e.g., raynor-archive.duckdns.org)
+
+{$DOMAIN:localhost} {
+    # API routes
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+    
+    # Everything else goes to Next.js
+    handle {
+        reverse_proxy web:3000
+    }
+    
+    # Security headers
+    header {
+        # Prevent clickjacking
+        X-Frame-Options "DENY"
+        # Prevent MIME sniffing
+        X-Content-Type-Options "nosniff"
+        # XSS protection
+        X-XSS-Protection "1; mode=block"
+        # Referrer policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}

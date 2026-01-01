@@ -1,0 +1,272 @@
+{
+ "Description": "Messenger Archive EC2 instance",
+ "Resources": {
+  "SecurityGroupDD263621": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Messenger Archive - SSH, HTTP, HTTPS only",
+    "GroupName": "messenger-archive-sg",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "SecurityGroupIngress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "SSH access",
+      "FromPort": 22,
+      "IpProtocol": "tcp",
+      "ToPort": 22
+     },
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "HTTP for ACME",
+      "FromPort": 80,
+      "IpProtocol": "tcp",
+      "ToPort": 80
+     },
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "HTTPS access",
+      "FromPort": 443,
+      "IpProtocol": "tcp",
+      "ToPort": 443
+     }
+    ],
+    "VpcId": "vpc-0f949a7271b8ed54b"
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/SecurityGroup/Resource"
+   }
+  },
+  "InstanceRole3CCE2F1D": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ec2.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "RoleName": "messenger-archive-instance-role"
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/InstanceRole/Resource"
+   }
+  },
+  "InstanceRoleDefaultPolicy1531605C": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "messenger-archive-storage:ExportsOutputFnGetAttBackupBucket26B8E51CArnB9BED001"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "messenger-archive-storage:ExportsOutputFnGetAttBackupBucket26B8E51CArnB9BED001"
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "InstanceRoleDefaultPolicy1531605C",
+    "Roles": [
+     {
+      "Ref": "InstanceRole3CCE2F1D"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/InstanceRole/DefaultPolicy/Resource"
+   }
+  },
+  "InstanceInstanceProfileAB5AEF02": {
+   "Type": "AWS::IAM::InstanceProfile",
+   "Properties": {
+    "Roles": [
+     {
+      "Ref": "InstanceRole3CCE2F1D"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/Instance/InstanceProfile"
+   }
+  },
+  "InstanceC1063A87": {
+   "Type": "AWS::EC2::Instance",
+   "Properties": {
+    "AvailabilityZone": "us-east-1a",
+    "BlockDeviceMappings": [
+     {
+      "DeviceName": "/dev/sda1",
+      "Ebs": {
+       "DeleteOnTermination": true,
+       "Encrypted": true,
+       "VolumeSize": 30,
+       "VolumeType": "gp3"
+      }
+     }
+    ],
+    "IamInstanceProfile": {
+     "Ref": "InstanceInstanceProfileAB5AEF02"
+    },
+    "ImageId": "ami-0030e4319cbf4dbf2",
+    "InstanceType": "t3.micro",
+    "KeyName": "raynor-macbook",
+    "SecurityGroupIds": [
+     {
+      "Fn::GetAtt": [
+       "SecurityGroupDD263621",
+       "GroupId"
+      ]
+     }
+    ],
+    "SubnetId": "subnet-091db3b0332d6139c",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "messenger-archive"
+     }
+    ],
+    "UserData": {
+     "Fn::Base64": "#!/bin/bash\n#!/bin/bash\nset -e\n\n# Log everything\nexec > >(tee /var/log/user-data.log) 2>&1\n\necho '=== Updating system ==='\napt-get update\napt-get upgrade -y\n\necho '=== Installing Docker ==='\ncurl -fsSL https://get.docker.com | sh\nusermod -aG docker ubuntu\n\necho '=== Installing fail2ban ==='\napt-get install -y fail2ban\nsystemctl enable fail2ban\nsystemctl start fail2ban\n\necho '=== Setting up swap (2GB) ==='\nfallocate -l 2G /swapfile\nchmod 600 /swapfile\nmkswap /swapfile\nswapon /swapfile\necho '/swapfile none swap sw 0 0' >> /etc/fstab\necho 'vm.swappiness=10' >> /etc/sysctl.conf\nsysctl -p\n\necho '=== Hardening SSH ==='\nsed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config\nsed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config\nsystemctl restart sshd\n\necho '=== Creating app directory ==='\nmkdir -p /opt/messenger-archive\nchown ubuntu:ubuntu /opt/messenger-archive\n\necho '=== Installing AWS CLI ==='\napt-get install -y awscli\n\necho '=== User data complete ==='"
+    }
+   },
+   "DependsOn": [
+    "InstanceRoleDefaultPolicy1531605C",
+    "InstanceRole3CCE2F1D"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/Instance/Resource"
+   }
+  },
+  "ElasticIP": {
+   "Type": "AWS::EC2::EIP",
+   "Properties": {
+    "Domain": "vpc"
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/ElasticIP"
+   }
+  },
+  "EIPAssociation": {
+   "Type": "AWS::EC2::EIPAssociation",
+   "Properties": {
+    "EIP": {
+     "Ref": "ElasticIP"
+    },
+    "InstanceId": {
+     "Ref": "InstanceC1063A87"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/EIPAssociation"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/1WMQQ6CMBBFz8K+VIGFa2OMYWWDBzC1ljhSOqSdxhDSu1tQo67en/9mpuRlVfF1Jh8+V9cuN3Dh04mk6lijPQanNEvuPGlVJqFVcEDjwWEY2K61/0VtPUmbLpL5zftavLH1HhVIArSRgez51KBZdhYKNKDGefymzyPhsAWjY5zLY6AhUGRipBvaVcWLgm+yuwfIXbAEvebNi09KPYm14QAAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "messenger-archive-compute/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "InstanceId": {
+   "Description": "EC2 Instance ID",
+   "Value": {
+    "Ref": "InstanceC1063A87"
+   }
+  },
+  "PublicIP": {
+   "Description": "Elastic IP address - point your DuckDNS domain here",
+   "Value": {
+    "Ref": "ElasticIP"
+   }
+  },
+  "SSHCommand": {
+   "Description": "SSH command to connect",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "ssh ubuntu@",
+      {
+       "Ref": "ElasticIP"
+      }
+     ]
+    ]
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
