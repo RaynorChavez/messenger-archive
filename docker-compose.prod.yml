@@ -156,6 +156,9 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8000
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      SYNAPSE_MEDIA_STORE: /synapse-media
+    volumes:
+      - ./config/synapse/media_store:/synapse-media:ro
     networks:
       - archive-network
     deploy:
