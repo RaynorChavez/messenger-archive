@@ -33,8 +33,8 @@ async function fetchAPI<T>(endpoint: string, options: FetchOptions = {}): Promis
 
   if (!response.ok) {
     if (response.status === 401) {
-      // Redirect to login
-      if (typeof window !== "undefined") {
+      // Redirect to login (but not if already on login page to avoid infinite loop)
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
       }
     }
