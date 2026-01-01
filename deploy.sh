@@ -109,6 +109,8 @@ deploy_app() {
     
     log_step "Deploying application to $SERVER_IP..."
     
+    # Note: We use a regular heredoc (not 'ENDSSH') so that variables are expanded
+    # The NEXT_PUBLIC_API_URL is read from the server's .env file
     ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
         set -e
         cd /opt/messenger-archive
@@ -117,8 +119,19 @@ deploy_app() {
         git fetch origin main
         git reset --hard origin/main
         
-        echo "=== Building containers ==="
-        docker compose -f docker-compose.prod.yml build --pull
+        # Load the API URL from .env for the build
+        if [ -f .env ]; then
+            export $(grep NEXT_PUBLIC_API_URL .env | xargs)
+        fi
+        
+        if [ -z "$NEXT_PUBLIC_API_URL" ]; then
+            echo "ERROR: NEXT_PUBLIC_API_URL not set in .env"
+            exit 1
+        fi
+        
+        echo "=== Building containers (API URL: $NEXT_PUBLIC_API_URL) ==="
+        # Pass the API URL as a build arg for the web container
+        NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" docker compose -f docker-compose.prod.yml build --pull
         
         echo "=== Restarting services ==="
         docker compose -f docker-compose.prod.yml up -d
