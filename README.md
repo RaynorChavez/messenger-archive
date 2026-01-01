@@ -151,77 +151,77 @@ backfill:
 
 Then restart: `docker compose restart mautrix-meta`
 
-## Remote Deployment (Oracle Cloud Free Tier)
+## Production Deployment (AWS)
 
-### 1. Create a Free Tier VM
+The project includes a `deploy.sh` script for deploying to AWS EC2.
 
-- Sign up at https://cloud.oracle.com
-- Create an "Always Free" ARM instance (Ampere A1)
-- Use Ubuntu 22.04 or later
-- Add your SSH key
-
-### 2. Configure Firewall
-
-In Oracle Cloud Console, add ingress rules for:
-- Port 22 (SSH)
-- Port 80 (HTTP)
-- Port 443 (HTTPS)
-- Port 3000 (Web UI) - or use a reverse proxy
-- Port 8080 (Element) - optional
-
-On the VM:
+### First-Time Setup
 
 ```bash
-sudo iptables -I INPUT -p tcp --dport 3000 -j ACCEPT
-sudo iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
-sudo netfilter-persistent save
+# 1. Deploy AWS infrastructure (EC2, S3)
+./deploy.sh infra
+
+# 2. Point your DuckDNS domain to the Elastic IP shown in output
+
+# 3. Setup .env on server
+./deploy.sh migrate:env
+ssh ubuntu@<server-ip> nano /opt/messenger-archive/.env
+
+# 4. Run full migration (db, users, bridge credentials, media, room access)
+./deploy.sh migrate
+
+# 5. Deploy application
+./deploy.sh app
 ```
 
-### 3. Install Docker
+### Deploy Commands
+
+| Command | Description |
+|---------|-------------|
+| `./deploy.sh app` | Deploy all services (full rebuild) |
+| `./deploy.sh web` | Deploy frontend only (Next.js) |
+| `./deploy.sh api` | Deploy backend only (FastAPI) |
+| `./deploy.sh archive` | Deploy archive-service only |
+
+### Migration Commands
+
+| Command | Description |
+|---------|-------------|
+| `./deploy.sh migrate` | Full migration (interactive) |
+| `./deploy.sh migrate:db` | Migrate messenger_archive database |
+| `./deploy.sh migrate:bridge` | Migrate Facebook login credentials |
+| `./deploy.sh migrate:media` | Sync Synapse media store |
+| `./deploy.sh migrate:users` | Create Matrix users |
+| `./deploy.sh migrate:rooms` | Join archive user to monitored rooms |
+| `./deploy.sh migrate:env` | Setup .env from template |
+
+### Utility Commands
+
+| Command | Description |
+|---------|-------------|
+| `./deploy.sh ssh` | SSH into the server |
+| `./deploy.sh logs` | Tail server logs |
+| `./deploy.sh status` | Show server status |
+| `./deploy.sh db` | Open psql shell |
+| `./deploy.sh restart [svc]` | Restart service(s) |
+| `./deploy.sh backup` | Run manual backup to S3 |
+
+### Quick Deployment Examples
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y docker.io docker-compose-v2
-sudo usermod -aG docker $USER
-# Log out and back in
-```
+# Made a frontend change? Deploy just the web container:
+./deploy.sh web
 
-### 4. Deploy
+# Made an API change? Deploy just the API:
+./deploy.sh api
 
-```bash
-git clone <repo-url>
-cd messenger-archive
-# Edit .env with your production values
-# Update NEXT_PUBLIC_API_URL to your server's IP/domain
-docker compose up -d
-```
+# Need to restart a service without rebuilding?
+./deploy.sh restart api
+./deploy.sh restart archive-service
 
-### 5. (Optional) Set Up HTTPS with Caddy
-
-Install Caddy as a reverse proxy:
-
-```bash
-sudo apt install -y caddy
-```
-
-Edit `/etc/caddy/Caddyfile`:
-
-```
-your-domain.com {
-    reverse_proxy localhost:3000
-}
-
-element.your-domain.com {
-    reverse_proxy localhost:8080
-}
-
-api.your-domain.com {
-    reverse_proxy localhost:8000
-}
-```
-
-```bash
-sudo systemctl restart caddy
+# Check what's happening on the server:
+./deploy.sh status
+./deploy.sh logs
 ```
 
 ## Development

@@ -1,20 +1,25 @@
 #!/bin/bash
 # Deployment script for Messenger Archive
-# Usage: ./deploy.sh [infra|app|migrate|backup|all]
+# Usage: ./deploy.sh [command]
 #
 # Commands:
-#   infra   - Deploy AWS infrastructure (EC2, S3) via CDK
-#   app     - Deploy application to EC2 (git pull + docker compose)
-#   migrate - Migrate data from local to server
-#   backup  - Run a manual backup
-#   all     - Deploy infra + app
+#   infra          - Deploy AWS infrastructure (EC2, S3) via CDK
+#   app            - Deploy application to EC2 (git pull + docker compose)
+#   migrate        - Full migration: db + bridge + media (interactive)
+#   migrate:db     - Migrate messenger_archive database only
+#   migrate:bridge - Migrate mautrix-meta bridge credentials (Facebook login)
+#   migrate:media  - Sync Synapse media store
+#   migrate:users  - Create Matrix users (archive, admin)
+#   backup         - Run a manual backup
+#   all            - Deploy infra + app
 #
 # First time setup:
 #   1. Update infra/cdk/config/prod.json with your DuckDNS domain
 #   2. Run: ./deploy.sh infra
 #   3. Point your DuckDNS domain to the Elastic IP (shown in output)
-#   4. Run: ./deploy.sh migrate
-#   5. Run: ./deploy.sh app
+#   4. SSH to server and create .env file
+#   5. Run: ./deploy.sh migrate (or individual migrate:* commands)
+#   6. Run: ./deploy.sh app
 
 set -e
 
@@ -98,7 +103,7 @@ deploy_infra() {
     deactivate
 }
 
-# Deploy application to server
+# Deploy application to server (all services)
 deploy_app() {
     SERVER_IP=$(get_server_ip)
     
@@ -147,8 +152,8 @@ ENDSSH
     log_info "Application deployed!"
 }
 
-# Migrate data from local to server
-migrate_data() {
+# Deploy frontend only (Next.js)
+deploy_web() {
     SERVER_IP=$(get_server_ip)
     
     if [ -z "$SERVER_IP" ]; then
@@ -156,13 +161,138 @@ migrate_data() {
         exit 1
     fi
     
-    log_step "Migrating data to $SERVER_IP..."
+    log_step "Deploying frontend to $SERVER_IP..."
     
-    # Check if local containers are running
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        echo "=== Pulling latest code ==="
+        git fetch origin main
+        git reset --hard origin/main
+        
+        # Load the API URL from .env for the build
+        if [ -f .env ]; then
+            export $(grep NEXT_PUBLIC_API_URL .env | xargs)
+        fi
+        
+        if [ -z "$NEXT_PUBLIC_API_URL" ]; then
+            echo "ERROR: NEXT_PUBLIC_API_URL not set in .env"
+            exit 1
+        fi
+        
+        echo "=== Building frontend (API URL: $NEXT_PUBLIC_API_URL) ==="
+        NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" docker compose -f docker-compose.prod.yml build web
+        
+        echo "=== Restarting frontend ==="
+        docker compose -f docker-compose.prod.yml up -d web
+        
+        echo "=== Cleaning up ==="
+        docker image prune -f
+        
+        echo "=== Done ==="
+        docker compose -f docker-compose.prod.yml ps web
+ENDSSH
+    
+    log_info "Frontend deployed!"
+}
+
+# Deploy backend only (FastAPI)
+deploy_api() {
+    SERVER_IP=$(get_server_ip)
+    
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Could not find server IP. Run './deploy.sh infra' first."
+        exit 1
+    fi
+    
+    log_step "Deploying API to $SERVER_IP..."
+    
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        echo "=== Pulling latest code ==="
+        git fetch origin main
+        git reset --hard origin/main
+        
+        echo "=== Building API ==="
+        docker compose -f docker-compose.prod.yml build api
+        
+        echo "=== Restarting API ==="
+        docker compose -f docker-compose.prod.yml up -d api
+        
+        echo "=== Cleaning up ==="
+        docker image prune -f
+        
+        echo "=== Done ==="
+        docker compose -f docker-compose.prod.yml ps api
+ENDSSH
+    
+    log_info "API deployed!"
+}
+
+# Deploy archive-service only
+deploy_archive() {
+    SERVER_IP=$(get_server_ip)
+    
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Could not find server IP. Run './deploy.sh infra' first."
+        exit 1
+    fi
+    
+    log_step "Deploying archive-service to $SERVER_IP..."
+    
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        echo "=== Pulling latest code ==="
+        git fetch origin main
+        git reset --hard origin/main
+        
+        echo "=== Building archive-service ==="
+        docker compose -f docker-compose.prod.yml build archive-service
+        
+        echo "=== Restarting archive-service ==="
+        docker compose -f docker-compose.prod.yml up -d archive-service
+        
+        echo "=== Cleaning up ==="
+        docker image prune -f
+        
+        echo "=== Done ==="
+        docker compose -f docker-compose.prod.yml ps archive-service
+ENDSSH
+    
+    log_info "Archive-service deployed!"
+}
+
+# Check server prerequisites
+check_server() {
+    SERVER_IP=$(get_server_ip)
+    
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Could not find server IP. Run './deploy.sh infra' first."
+        exit 1
+    fi
+    
+    echo "$SERVER_IP"
+}
+
+# Check local containers are running
+check_local() {
     if ! docker ps | grep -q archive-postgres; then
         log_error "Local postgres container not running. Start with 'docker compose up -d'"
         exit 1
     fi
+}
+
+# Migrate messenger_archive database
+migrate_db() {
+    SERVER_IP=$(check_server)
+    check_local
+    
+    log_step "Migrating messenger_archive database to $SERVER_IP..."
     
     # Export database
     log_info "Exporting local database..."
@@ -170,59 +300,412 @@ migrate_data() {
     BACKUP_SIZE=$(du -h /tmp/messenger-archive-backup.sql.gz | cut -f1)
     log_info "Database exported: $BACKUP_SIZE"
     
-    # Copy files to server
-    log_info "Copying files to server..."
-    scp /tmp/messenger-archive-backup.sql.gz ubuntu@"$SERVER_IP":/opt/messenger-archive/
+    # Copy to server
+    log_info "Copying database to server..."
+    scp /tmp/messenger-archive-backup.sql.gz ubuntu@"$SERVER_IP":/tmp/
+    
+    # Import on server
+    log_info "Importing database on server..."
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        # Ensure postgres is running
+        docker compose -f docker-compose.prod.yml up -d postgres
+        sleep 5
+        
+        # Drop and recreate database to ensure clean import
+        docker exec archive-postgres psql -U archive -d postgres -c "DROP DATABASE IF EXISTS messenger_archive;"
+        docker exec archive-postgres psql -U archive -d postgres -c "CREATE DATABASE messenger_archive;"
+        
+        # Import
+        gunzip -c /tmp/messenger-archive-backup.sql.gz | docker exec -i archive-postgres psql -U archive messenger_archive
+        
+        rm /tmp/messenger-archive-backup.sql.gz
+        echo "Database imported successfully!"
+ENDSSH
+    
+    rm /tmp/messenger-archive-backup.sql.gz
+    log_info "Database migration complete!"
+}
+
+# Migrate mautrix-meta bridge credentials (Facebook login)
+migrate_bridge() {
+    SERVER_IP=$(check_server)
+    check_local
+    
+    log_step "Migrating mautrix-meta bridge credentials to $SERVER_IP..."
+    
+    # Export user and user_login tables from local mautrix_meta database
+    log_info "Exporting bridge credentials from local..."
+    docker exec archive-postgres pg_dump -U archive -d mautrix_meta -t user -t user_login --data-only --inserts > /tmp/mautrix-users.sql
+    
+    if [ ! -s /tmp/mautrix-users.sql ]; then
+        log_warn "No bridge credentials found locally. You may need to login via Element."
+        rm -f /tmp/mautrix-users.sql
+        return 0
+    fi
+    
+    # Copy to server
+    scp /tmp/mautrix-users.sql ubuntu@"$SERVER_IP":/tmp/
+    
+    # Import on server
+    log_info "Importing bridge credentials on server..."
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        # Ensure services are running
+        docker compose -f docker-compose.prod.yml up -d postgres mautrix-meta
+        sleep 5
+        
+        # Clear existing and import
+        docker exec archive-postgres psql -U archive -d mautrix_meta -c "DELETE FROM user_login;"
+        docker exec archive-postgres psql -U archive -d mautrix_meta -c "DELETE FROM \"user\";"
+        docker exec -i archive-postgres psql -U archive -d mautrix_meta < /tmp/mautrix-users.sql
+        
+        # Restart mautrix-meta to pick up the credentials
+        docker compose -f docker-compose.prod.yml restart mautrix-meta
+        
+        rm /tmp/mautrix-users.sql
+        echo "Bridge credentials imported successfully!"
+ENDSSH
+    
+    rm /tmp/mautrix-users.sql
+    log_info "Bridge migration complete!"
+}
+
+# Sync Synapse media store
+migrate_media() {
+    SERVER_IP=$(check_server)
+    
+    log_step "Syncing Synapse media store to $SERVER_IP..."
+    
+    LOCAL_MEDIA="$SCRIPT_DIR/config/synapse/media_store"
+    
+    if [ ! -d "$LOCAL_MEDIA" ]; then
+        log_warn "No local media store found at $LOCAL_MEDIA"
+        return 0
+    fi
+    
+    # Get size
+    MEDIA_SIZE=$(du -sh "$LOCAL_MEDIA" 2>/dev/null | cut -f1)
+    log_info "Syncing media store ($MEDIA_SIZE)..."
+    
+    # Ensure remote directory exists
+    ssh ubuntu@"$SERVER_IP" "mkdir -p /opt/messenger-archive/config/synapse/media_store"
+    
+    # Rsync media (this preserves existing files and only copies new/changed ones)
+    rsync -avz --progress \
+        "$LOCAL_MEDIA/" \
+        ubuntu@"$SERVER_IP":/opt/messenger-archive/config/synapse/media_store/
+    
+    # Also sync the Synapse media database tables
+    log_info "Syncing Synapse media database tables..."
+    docker exec archive-postgres pg_dump -U archive -d synapse \
+        -t local_media_repository \
+        -t local_media_repository_thumbnails \
+        --data-only --inserts > /tmp/synapse-media-tables.sql
+    
+    if [ -s /tmp/synapse-media-tables.sql ]; then
+        scp /tmp/synapse-media-tables.sql ubuntu@"$SERVER_IP":/tmp/
+        ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+            set -e
+            cd /opt/messenger-archive
+            docker compose -f docker-compose.prod.yml up -d postgres synapse
+            sleep 5
+            # Import media tables (ignore errors for duplicates)
+            docker exec -i archive-postgres psql -U archive -d synapse < /tmp/synapse-media-tables.sql 2>/dev/null || true
+            rm /tmp/synapse-media-tables.sql
+ENDSSH
+        rm /tmp/synapse-media-tables.sql
+    fi
+    
+    log_info "Media sync complete!"
+}
+
+# Create Matrix users on production
+migrate_users() {
+    SERVER_IP=$(check_server)
+    
+    log_step "Creating Matrix users on $SERVER_IP..."
+    
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
+        # Add rate limit config to Synapse if not present
+        if ! grep -q "rc_login:" /opt/messenger-archive/config/synapse/homeserver.yaml 2>/dev/null; then
+            echo "Adding rate limit config to Synapse..."
+            sudo tee -a /opt/messenger-archive/config/synapse/homeserver.yaml > /dev/null << 'RATELIMIT'
+
+# Disable rate limiting for local services
+rc_login:
+  address:
+    per_second: 1000
+    burst_count: 1000
+  account:
+    per_second: 1000
+    burst_count: 1000
+  failed_attempts:
+    per_second: 1000
+    burst_count: 1000
+
+rc_message:
+  per_second: 1000
+  burst_count: 1000
+
+rc_registration:
+  per_second: 1000
+  burst_count: 1000
+
+rc_joins:
+  local:
+    per_second: 1000
+    burst_count: 1000
+  remote:
+    per_second: 1000
+    burst_count: 1000
+RATELIMIT
+        fi
+        
+        # Ensure synapse is running
+        docker compose -f docker-compose.prod.yml up -d synapse
+        sleep 10
+        
+        echo "Creating @archive user (for archive-service)..."
+        docker exec archive-synapse register_new_matrix_user \
+            -c /data/homeserver.yaml \
+            -u archive \
+            -p archivepass123 \
+            -a 2>/dev/null || echo "User @archive may already exist"
+        
+        echo "Creating @admin user (for mautrix-meta bridge)..."
+        docker exec archive-synapse register_new_matrix_user \
+            -c /data/homeserver.yaml \
+            -u admin \
+            -p adminpass123 \
+            -a 2>/dev/null || echo "User @admin may already exist"
+        
+        echo "Matrix users created!"
+ENDSSH
+    
+    log_info "Matrix users created!"
+}
+
+# Copy config files to server
+migrate_configs() {
+    SERVER_IP=$(check_server)
+    
+    log_step "Copying config files to $SERVER_IP..."
+    
+    # Copy config directories
     scp -r "$SCRIPT_DIR/config/mautrix-meta" ubuntu@"$SERVER_IP":/opt/messenger-archive/config/
     scp -r "$SCRIPT_DIR/config/synapse" ubuntu@"$SERVER_IP":/opt/messenger-archive/config/
     scp -r "$SCRIPT_DIR/config/element" ubuntu@"$SERVER_IP":/opt/messenger-archive/config/
     
-    # Clone repo and setup on server
-    log_info "Setting up application on server..."
-    ssh ubuntu@"$SERVER_IP" << ENDSSH
+    log_info "Config files copied!"
+}
+
+# Setup .env file on server
+migrate_env() {
+    SERVER_IP=$(check_server)
+    
+    log_step "Setting up .env file on $SERVER_IP..."
+    
+    # Check if .env.example exists locally
+    if [ ! -f "$SCRIPT_DIR/.env.example" ]; then
+        log_error "No .env.example found locally"
+        exit 1
+    fi
+    
+    # Check if .env already exists on server
+    if ssh ubuntu@"$SERVER_IP" "test -f /opt/messenger-archive/.env"; then
+        log_warn ".env already exists on server"
+        read -p "Overwrite with .env.example template? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing .env"
+            return 0
+        fi
+    fi
+    
+    # Copy .env.example to server as .env
+    log_info "Copying .env.example to server..."
+    scp "$SCRIPT_DIR/.env.example" ubuntu@"$SERVER_IP":/opt/messenger-archive/.env
+    
+    log_info ".env created on server!"
+    echo ""
+    echo "IMPORTANT: Edit the .env file on the server to set:"
+    echo "  - NEXT_PUBLIC_API_URL (your domain)"
+    echo "  - POSTGRES_PASSWORD"
+    echo "  - ARCHIVE_PASSWORD_HASH (generate with: htpasswd -nbBC 10 '' 'yourpassword' | tr -d ':')"
+    echo ""
+    echo "Run: ssh ubuntu@$SERVER_IP nano /opt/messenger-archive/.env"
+}
+
+# Join archive user to monitored rooms
+migrate_room_access() {
+    SERVER_IP=$(check_server)
+    
+    log_step "Joining archive user to monitored rooms on $SERVER_IP..."
+    
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
         set -e
         cd /opt/messenger-archive
         
-        # Clone repo if not exists
-        if [ ! -d ".git" ]; then
-            echo "Cloning repository..."
-            git clone https://github.com/YOUR_USERNAME/messenger-archive.git .
+        # Ensure services are running
+        docker compose -f docker-compose.prod.yml up -d synapse postgres
+        sleep 5
+        
+        # Create an admin user if it doesn't exist
+        echo "Ensuring admin user exists..."
+        docker exec archive-synapse register_new_matrix_user \
+            -c /data/homeserver.yaml \
+            -u archiveadmin \
+            -p archiveadmin123 \
+            -a 2>/dev/null || true
+        
+        # Make archive user a server admin (needed for room access)
+        docker exec archive-postgres psql -U archive -d synapse -c \
+            "UPDATE users SET admin = 1 WHERE name = '@archive:archive.local';" 2>/dev/null || true
+        
+        # Get admin token
+        ADMIN_TOKEN=$(docker compose -f docker-compose.prod.yml exec -T synapse curl -s \
+            -X POST 'http://localhost:8008/_matrix/client/v3/login' \
+            -H 'Content-Type: application/json' \
+            -d '{"type": "m.login.password", "user": "archiveadmin", "password": "archiveadmin123"}' \
+            | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+        
+        if [ -z "$ADMIN_TOKEN" ]; then
+            echo "Warning: Could not get admin token. Room access may need manual setup."
+            exit 0
         fi
         
-        # Check if .env exists
+        # Get archive user token
+        ARCHIVE_TOKEN=$(docker compose -f docker-compose.prod.yml exec -T synapse curl -s \
+            -X POST 'http://localhost:8008/_matrix/client/v3/login' \
+            -H 'Content-Type: application/json' \
+            -d '{"type": "m.login.password", "user": "archive", "password": "archivepass123"}' \
+            | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+        
+        # Get room IDs from messenger_archive database
+        ROOMS=$(docker exec archive-postgres psql -U archive -d messenger_archive -t -c \
+            "SELECT matrix_room_id FROM rooms;")
+        
+        for ROOM_ID in $ROOMS; do
+            ROOM_ID=$(echo "$ROOM_ID" | tr -d ' ')
+            if [ -n "$ROOM_ID" ]; then
+                echo "Processing room: $ROOM_ID"
+                
+                # URL encode the room ID
+                ENCODED_ROOM=$(echo "$ROOM_ID" | sed 's/!/%21/g' | sed 's/:/%3A/g')
+                
+                # Check if room exists in Synapse
+                ROOM_EXISTS=$(docker exec archive-postgres psql -U archive -d synapse -t -c \
+                    "SELECT COUNT(*) FROM room_stats_state WHERE room_id = '$ROOM_ID';" | tr -d ' ')
+                
+                if [ "$ROOM_EXISTS" = "0" ]; then
+                    echo "  Room $ROOM_ID not yet synced to Synapse, skipping..."
+                    continue
+                fi
+                
+                # Use admin API to make archive user a room admin (this also joins them)
+                echo "  Adding archive user to room..."
+                docker compose -f docker-compose.prod.yml exec -T synapse curl -s \
+                    -X POST "http://localhost:8008/_synapse/admin/v1/rooms/$ENCODED_ROOM/make_room_admin" \
+                    -H "Authorization: Bearer $ADMIN_TOKEN" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"user_id": "@archive:archive.local"}' || true
+                
+                # Accept any pending invite
+                if [ -n "$ARCHIVE_TOKEN" ]; then
+                    docker compose -f docker-compose.prod.yml exec -T synapse curl -s \
+                        -X POST "http://localhost:8008/_matrix/client/v3/join/$ENCODED_ROOM" \
+                        -H "Authorization: Bearer $ARCHIVE_TOKEN" \
+                        -H 'Content-Type: application/json' \
+                        -d '{}' || true
+                fi
+                
+                echo "  Done"
+            fi
+        done
+        
+        echo "Room access setup complete!"
+        
+        # Restart archive-service to pick up new room memberships
+        echo "Restarting archive-service..."
+        docker compose -f docker-compose.prod.yml restart archive-service
+ENDSSH
+    
+    log_info "Room access migration complete!"
+}
+
+# Full migration (interactive)
+migrate_data() {
+    SERVER_IP=$(check_server)
+    check_local
+    
+    log_step "Starting full migration to $SERVER_IP..."
+    echo ""
+    echo "This will migrate:"
+    echo "  1. Config files (mautrix-meta, synapse, element)"
+    echo "  2. messenger_archive database"
+    echo "  3. Matrix users (archive, admin)"
+    echo "  4. mautrix-meta bridge credentials (Facebook login)"
+    echo "  5. Synapse media store"
+    echo "  6. Room access (join archive user to monitored rooms)"
+    echo ""
+    read -p "Continue? (y/N) " -n 1 -r
+    echo ""
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Migration cancelled."
+        exit 0
+    fi
+    
+    # Ensure server has basic setup
+    log_info "Checking server setup..."
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        set -e
+        cd /opt/messenger-archive
+        
         if [ ! -f ".env" ]; then
             echo ""
-            echo "ERROR: .env file not found!"
-            echo "Create /opt/messenger-archive/.env with your configuration."
-            echo "See .env.example for reference."
+            echo "ERROR: .env file not found on server!"
+            echo "Create /opt/messenger-archive/.env first."
             exit 1
         fi
         
-        echo "Starting services..."
+        # Start postgres first
         docker compose -f docker-compose.prod.yml up -d postgres
-        
-        echo "Waiting for postgres to be ready..."
+        echo "Waiting for postgres..."
         sleep 10
-        
-        echo "Importing database..."
-        gunzip -c messenger-archive-backup.sql.gz | docker exec -i archive-postgres psql -U archive messenger_archive
-        
-        echo "Starting all services..."
-        docker compose -f docker-compose.prod.yml up -d
-        
-        echo "Cleaning up..."
-        rm messenger-archive-backup.sql.gz
 ENDSSH
     
-    # Cleanup local temp file
-    rm /tmp/messenger-archive-backup.sql.gz
+    # Run all migrations
+    migrate_configs
+    migrate_db
+    migrate_users
+    migrate_bridge
+    migrate_media
+    migrate_room_access
     
-    log_info "Migration complete!"
+    # Start all services
+    log_info "Starting all services..."
+    ssh ubuntu@"$SERVER_IP" << 'ENDSSH'
+        cd /opt/messenger-archive
+        docker compose -f docker-compose.prod.yml up -d
+        sleep 5
+        docker compose -f docker-compose.prod.yml ps
+ENDSSH
+    
+    log_info "Full migration complete!"
     echo ""
-    echo "Next steps:"
-    echo "1. SSH to server: ssh ubuntu@$SERVER_IP"
-    echo "2. Create .env file if not done: nano /opt/messenger-archive/.env"
-    echo "3. Verify services: docker compose -f docker-compose.prod.yml ps"
+    echo "Verify the deployment:"
+    echo "  1. Check status: ./deploy.sh status"
+    echo "  2. Check logs: ./deploy.sh logs"
+    echo "  3. Visit: https://your-domain.duckdns.org"
 }
 
 # Run manual backup
@@ -248,15 +731,25 @@ show_help() {
     echo "Usage: ./deploy.sh [command]"
     echo ""
     echo "Commands:"
-    echo "  infra    Deploy AWS infrastructure (EC2, S3) via CDK"
-    echo "  app      Deploy application to EC2 (git pull + docker compose)"
-    echo "  migrate  Migrate data from local to server"
-    echo "  backup   Run a manual backup to S3"
-    echo "  all      Deploy infra + wait + app"
-    echo "  ssh      SSH into the server"
-    echo "  logs     Show server logs"
-    echo "  db       Open psql shell (local or remote)"
-    echo "  status   Show server status"
+    echo "  infra           Deploy AWS infrastructure (EC2, S3) via CDK"
+    echo "  app             Deploy all services (git pull + build + restart)"
+    echo "  web             Deploy frontend only (Next.js)"
+    echo "  api             Deploy backend only (FastAPI)"
+    echo "  archive         Deploy archive-service only"
+    echo "  migrate         Full migration: db + bridge + media + rooms (interactive)"
+    echo "  migrate:db      Migrate messenger_archive database only"
+    echo "  migrate:bridge  Migrate mautrix-meta bridge credentials (Facebook login)"
+    echo "  migrate:media   Sync Synapse media store"
+    echo "  migrate:users   Create Matrix users (archive, admin)"
+    echo "  migrate:rooms   Join archive user to monitored rooms"
+    echo "  migrate:env     Setup .env file on server from template"
+    echo "  backup          Run a manual backup to S3"
+    echo "  all             Deploy infra + wait + app"
+    echo "  ssh             SSH into the server"
+    echo "  logs            Show server logs"
+    echo "  db              Open psql shell (local or remote)"
+    echo "  status          Show server status"
+    echo "  restart [svc]   Restart service (or all if none specified)"
     echo ""
     echo "First time setup:"
     echo "  1. Update infra/cdk/config/prod.json with your DuckDNS domain"
@@ -264,6 +757,7 @@ show_help() {
     echo "  3. Point DuckDNS to the Elastic IP shown in output"
     echo "  4. SSH to server and create .env file"
     echo "  5. ./deploy.sh migrate"
+    echo "  6. ./deploy.sh app"
 }
 
 # SSH into server
@@ -304,6 +798,27 @@ open_db() {
     fi
 }
 
+# Restart a specific service or all services
+restart_service() {
+    SERVER_IP=$(get_server_ip)
+    SERVICE="${1:-}"
+    
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Could not find server IP. Run './deploy.sh infra' first."
+        exit 1
+    fi
+    
+    if [ -z "$SERVICE" ]; then
+        log_step "Restarting all services on $SERVER_IP..."
+        ssh ubuntu@"$SERVER_IP" "cd /opt/messenger-archive && docker compose -f docker-compose.prod.yml restart"
+    else
+        log_step "Restarting $SERVICE on $SERVER_IP..."
+        ssh ubuntu@"$SERVER_IP" "cd /opt/messenger-archive && docker compose -f docker-compose.prod.yml restart $SERVICE"
+    fi
+    
+    log_info "Restart complete!"
+}
+
 # Show status
 show_status() {
     SERVER_IP=$(get_server_ip)
@@ -335,8 +850,35 @@ case "$COMMAND" in
     app)
         deploy_app
         ;;
+    web)
+        deploy_web
+        ;;
+    api)
+        deploy_api
+        ;;
+    archive)
+        deploy_archive
+        ;;
     migrate)
         migrate_data
+        ;;
+    migrate:db)
+        migrate_db
+        ;;
+    migrate:bridge)
+        migrate_bridge
+        ;;
+    migrate:media)
+        migrate_media
+        ;;
+    migrate:users)
+        migrate_users
+        ;;
+    migrate:rooms)
+        migrate_room_access
+        ;;
+    migrate:env)
+        migrate_env
         ;;
     backup)
         run_backup
@@ -358,6 +900,9 @@ case "$COMMAND" in
         ;;
     status)
         show_status
+        ;;
+    restart)
+        restart_service "${2:-}"
         ;;
     help|--help|-h|"")
         show_help
