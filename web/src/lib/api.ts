@@ -183,13 +183,14 @@ export interface PersonActivityResponse {
   most_active_hour: number | null;
 }
 
-// Convert mxc:// URL to HTTP URL
+// Convert mxc:// URL to HTTP URL via API proxy
 export function mxcToHttp(mxcUrl: string | null | undefined): string | null {
   if (!mxcUrl || !mxcUrl.startsWith("mxc://")) return null;
   const parts = mxcUrl.replace("mxc://", "").split("/");
   if (parts.length < 2) return null;
   const [serverName, mediaId] = parts;
-  return `http://localhost:8008/_matrix/media/v3/download/${serverName}/${mediaId}`;
+  // Use API proxy instead of direct Synapse access
+  return `${API_URL}/api/media/${serverName}/${mediaId}`;
 }
 
 export interface PeopleListResponse {

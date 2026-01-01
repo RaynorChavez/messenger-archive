@@ -9,6 +9,7 @@ from .discussions import router as discussions_router
 from .search import router as search_router
 from .virtual_chat import router as virtual_chat_router
 from .rooms import router as rooms_router
+from .media import router as media_router
 
 __all__ = [
     "auth_router",
@@ -22,4 +23,5 @@ __all__ = [
     "search_router",
     "virtual_chat_router",
     "rooms_router",
+    "media_router",
 ]
