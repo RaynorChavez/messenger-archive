@@ -751,6 +751,8 @@ show_help() {
     echo "  status          Show server status"
     echo "  restart [svc]   Restart service (or all if none specified)"
     echo ""
+    echo "Services: api, web, archive-service, pgbouncer, postgres, synapse, mautrix-meta, caddy"
+    echo ""
     echo "First time setup:"
     echo "  1. Update infra/cdk/config/prod.json with your DuckDNS domain"
     echo "  2. ./deploy.sh infra"

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ===========================================================================
   # Database
@@ -23,6 +21,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - archive-network
+
+  # ===========================================================================
+  # Connection Pooler (PgBouncer)
+  # ===========================================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: archive-pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 15
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6432:6432"  # Exposed for local scripts
     networks:
       - archive-network
 
@@ -72,10 +92,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       synapse:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql://archive:archivepass123@postgres:5432/messenger_archive
+      DATABASE_URL: postgresql://archive:archivepass123@pgbouncer:6432/messenger_archive
       MATRIX_HOMESERVER_URL: http://synapse:8008
       MATRIX_USER_ID: "@archive:archive.local"
       MATRIX_PASSWORD: "archivepass123"
@@ -97,6 +119,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     environment:
       DATABASE_URL: ${DATABASE_URL}
       ARCHIVE_PASSWORD_HASH: ${ARCHIVE_PASSWORD_HASH}

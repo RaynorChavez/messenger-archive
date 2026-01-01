@@ -72,14 +72,28 @@ async def get_or_create_person(db, matrix_user_id: str, display_name: Optional[s
     ).fetchone()
     
     if result:
-        # Update avatar_url if we have a new one
-        if avatar_url:
+        person_id = result[0]
+        # Update display_name if we have a real one and current is missing/placeholder
+        # Also update avatar_url if we have a new one
+        if display_name and not display_name.startswith("meta_"):
             db.execute(
-                text("UPDATE people SET avatar_url = :avatar_url WHERE id = :id AND (avatar_url IS NULL OR avatar_url = '')"),
-                {"avatar_url": avatar_url, "id": result[0]}
+                text("""
+                    UPDATE people 
+                    SET display_name = COALESCE(NULLIF(:display_name, ''), display_name),
+                        avatar_url = COALESCE(NULLIF(:avatar_url, ''), avatar_url)
+                    WHERE id = :id 
+                    AND (display_name IS NULL OR display_name LIKE 'meta_%' OR display_name = '')
+                """),
+                {"display_name": display_name, "avatar_url": avatar_url, "id": person_id}
             )
             db.commit()
-        return result[0]
+        elif avatar_url:
+            db.execute(
+                text("UPDATE people SET avatar_url = :avatar_url WHERE id = :id AND (avatar_url IS NULL OR avatar_url = '')"),
+                {"avatar_url": avatar_url, "id": person_id}
+            )
+            db.commit()
+        return person_id
     
     # Try to find a matching FB-imported person by display name
     # FB imports have matrix_user_id like '@fb_import_xxx:archive.local'

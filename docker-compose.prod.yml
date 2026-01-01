@@ -70,6 +70,30 @@ services:
     # NOT exposed to host - internal only
 
   # ===========================================================================
+  # Connection Pooler (PgBouncer) - Internal only
+  # ===========================================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: archive-pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 15
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+    networks:
+      - archive-network
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+
+  # ===========================================================================
   # Matrix Homeserver (Synapse) - Internal only
   # ===========================================================================
   synapse:
@@ -122,10 +146,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       synapse:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       MATRIX_HOMESERVER_URL: http://synapse:8008
       MATRIX_USER_ID: "@archive:archive.local"
       MATRIX_PASSWORD: "archivepass123"
@@ -149,6 +175,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     environment:
       DATABASE_URL: ${DATABASE_URL}
       ARCHIVE_PASSWORD_HASH: ${ARCHIVE_PASSWORD_HASH}

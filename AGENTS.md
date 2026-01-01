@@ -66,9 +66,30 @@ Facebook Messenger
 | synapse | archive-synapse | 8008 | Matrix homeserver |
 | mautrix-meta | archive-mautrix-meta | 29319 | Facebook bridge |
 | archive-service | archive-service | - | Message sync service |
-| postgres | archive-postgres | 5432 | Database |
+| postgres | archive-postgres | 5432 | Database (direct) |
+| pgbouncer | archive-pgbouncer | 6432 | Connection pooler |
 | caddy | archive-caddy | 80/443 | Reverse proxy |
 | element | archive-element | 8080 | Matrix web client |
+
+## Connection Pooling (PgBouncer)
+
+`api` and `archive-service` connect to PostgreSQL through PgBouncer on port 6432 for connection pooling. This allows many application connections to share a smaller pool of actual database connections.
+
+```
+api ──────────┐
+              ├──► pgbouncer:6432 ──► postgres:5432 (messenger_archive)
+archive-svc ──┘    (100 → 15 conn)
+
+synapse ─────────────────────────────► postgres:5432 (synapse)
+mautrix-meta ────────────────────────► postgres:5432 (mautrix_meta)
+```
+
+Configuration:
+- Pool mode: `transaction` (connection released after each transaction)
+- Max client connections: 100
+- Default pool size: 15 connections to PostgreSQL
+
+If you see connection errors, check `./deploy.sh restart pgbouncer`.
 
 ## Databases
 
