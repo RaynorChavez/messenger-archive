@@ -494,14 +494,17 @@ class VirtualChatService:
                 # Build persona context
                 _, persona_context = persona_builder.build_persona_context(person.id)
                 
-                # Build conversation history text
-                history_text = self._format_conversation_history(history[:-1])  # Exclude the just-added message
+                # Build conversation contents with proper roles for caching
+                # Each persona sees their own messages as 'model' role, others as 'user' role
+                conversation_contents = self._build_conversation_contents(
+                    messages=history[:-1],  # Exclude the just-added user message
+                    current_user_message=content,
+                    persona_id=person.id,
+                    persona_name=display_name
+                )
                 
-                # Build the user prompt (conversation context)
-                user_prompt = f"## Current Conversation\n{history_text}\n\nUser: {content}\n\nRespond as {display_name}:"
-                
-                # Debug log the prompt
-                logger.info(f"Prompt for {display_name} ({len(history)-1} history messages):\n{user_prompt[:500]}...")
+                # Debug log
+                logger.info(f"Prompt for {display_name} ({len(history)-1} history messages, {len(conversation_contents)} content blocks)")
                 
                 # Stream response from Gemini with system instruction
                 # Run in thread to avoid blocking the event loop
@@ -513,7 +516,7 @@ class VirtualChatService:
                     try:
                         response = self.client.models.generate_content_stream(
                             model=self.MODEL,
-                            contents=user_prompt,
+                            contents=conversation_contents,
                             config=types.GenerateContentConfig(
                                 system_instruction=f"{SYSTEM_INSTRUCTION}\n\n{persona_context}",
                                 temperature=1.0,
@@ -644,6 +647,80 @@ class VirtualChatService:
                 lines.append(f"{sender_name}: {msg.content}")
         
         return "\n".join(lines)
+    
+    def _build_conversation_contents(
+        self, 
+        messages: List[VirtualMessage], 
+        current_user_message: str,
+        persona_id: int,
+        persona_name: str
+    ) -> List[types.Content]:
+        """Build conversation contents with proper roles for a specific persona.
+        
+        For prompt caching to work:
+        - System instruction + persona context is the cached prefix
+        - Conversation history grows but maintains structure
+        - Each persona sees their own messages as 'model' role, others as 'user' role
+        
+        Args:
+            messages: Previous messages (excluding current user message)
+            current_user_message: The new user message to respond to
+            persona_id: The person_id of the current persona
+            persona_name: Display name of the current persona
+        
+        Returns:
+            List of Content objects for the Gemini API
+        """
+        contents = []
+        
+        # Group consecutive messages by role (from this persona's perspective)
+        # - User messages and other personas' messages -> "user" role
+        # - This persona's messages -> "model" role
+        current_role = None
+        current_parts = []
+        
+        def flush_current():
+            nonlocal current_role, current_parts
+            if current_parts and current_role:
+                contents.append(types.Content(
+                    role=current_role,
+                    parts=[types.Part.from_text("\n".join(current_parts))]
+                ))
+            current_parts = []
+            current_role = None
+        
+        for msg in messages:
+            if msg.sender_type == "user":
+                # User message
+                msg_role = "user"
+                msg_text = f"User: {msg.content}"
+            elif msg.person_id == persona_id:
+                # This persona's own message
+                msg_role = "model"
+                msg_text = msg.content  # No prefix needed for own messages
+            else:
+                # Another persona's message
+                msg_role = "user"
+                sender_name = msg.person.display_name if msg.person else "Agent"
+                msg_text = f"{sender_name}: {msg.content}"
+            
+            # If role changed, flush the current batch
+            if msg_role != current_role:
+                flush_current()
+                current_role = msg_role
+            
+            current_parts.append(msg_text)
+        
+        # Flush any remaining messages
+        flush_current()
+        
+        # Add the current user message
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part.from_text(f"User: {current_user_message}\n\nRespond as {persona_name}:")]
+        ))
+        
+        return contents
     
     def _sse_event(self, event_type: str, data: dict) -> str:
         """Format an SSE event."""
