@@ -23,7 +23,7 @@ from ..db import (
     TopicClassificationRun,
     Room,
 )
-from ..auth import get_current_session
+from ..auth import get_current_session, require_scope, get_current_scope, get_allowed_room_ids, Scope
 from ..config import get_settings
 from ..schemas.discussion import (
     DiscussionBrief,
@@ -277,7 +277,7 @@ async def start_analysis(
     room_id: int = Query(..., description="Room ID to analyze"),
     mode: str = Query("incremental", pattern="^(incremental|full)$", description="Analysis mode: 'incremental' (only new messages) or 'full' (all messages)"),
     db: Session = Depends(get_db),
-    session: str = Depends(get_current_session),
+    scope: Scope = Depends(require_scope("admin")),  # Admin only
 ):
     """Start a new discussion analysis for a specific room.
     
@@ -934,7 +934,7 @@ async def list_topics(
 async def start_topic_classification(
     room_id: int = Query(..., description="Room ID to classify topics for"),
     db: Session = Depends(get_db),
-    session: str = Depends(get_current_session),
+    scope: Scope = Depends(require_scope("admin")),  # Admin only
 ):
     """Start topic classification for all discussions in a specific room."""
     import threading

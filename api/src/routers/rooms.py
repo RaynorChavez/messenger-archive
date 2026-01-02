@@ -1,11 +1,11 @@
 """Room endpoints for multi-room support."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from ..db import get_db, Room, Message, RoomMember
-from ..auth import get_current_session
+from ..auth import get_current_scope, get_allowed_room_ids, Scope
 from ..schemas.room import RoomListResponse, RoomListItem, RoomDetail
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -14,10 +14,12 @@ router = APIRouter(prefix="/rooms", tags=["rooms"])
 @router.get("", response_model=RoomListResponse)
 async def list_rooms(
     db: Session = Depends(get_db),
-    _user: str = Depends(get_current_session),
+    scope: Scope = Depends(get_current_scope),
 ):
-    """List all rooms for the room selector dropdown."""
-    # Get room stats with aggregated data
+    """List rooms accessible to the current scope."""
+    allowed_rooms = get_allowed_room_ids(scope)
+    
+    # Get room stats with aggregated data, filtered by scope
     rooms_with_stats = (
         db.query(
             Room.id,
@@ -28,6 +30,7 @@ async def list_rooms(
             func.count(Message.id).label("message_count"),
             func.max(Message.timestamp).label("last_message_at"),
         )
+        .filter(Room.id.in_(allowed_rooms))
         .outerjoin(Message, Room.id == Message.room_id)
         .group_by(Room.id)
         .order_by(Room.display_order, Room.id)
@@ -61,10 +64,11 @@ async def list_rooms(
 @router.get("/first", response_model=RoomDetail)
 async def get_first_room(
     db: Session = Depends(get_db),
-    _user: str = Depends(get_current_session),
+    scope: Scope = Depends(get_current_scope),
 ):
-    """Get the first room (for redirects). Returns 404 if no rooms exist."""
-    room = db.query(Room).order_by(Room.display_order, Room.id).first()
+    """Get the first accessible room (for redirects). Returns 404 if no rooms exist."""
+    allowed_rooms = get_allowed_room_ids(scope)
+    room = db.query(Room).filter(Room.id.in_(allowed_rooms)).order_by(Room.display_order, Room.id).first()
     if not room:
         raise HTTPException(status_code=404, detail="No rooms found")
     
@@ -106,9 +110,13 @@ async def get_first_room(
 async def get_room(
     room_id: int,
     db: Session = Depends(get_db),
-    _user: str = Depends(get_current_session),
+    scope: Scope = Depends(get_current_scope),
 ):
     """Get detailed information about a specific room."""
+    allowed_rooms = get_allowed_room_ids(scope)
+    if room_id not in allowed_rooms:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this room")
+    
     room = db.query(Room).filter(Room.id == room_id).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")

@@ -89,10 +89,12 @@ export const rooms = {
   first: () => fetchAPI<RoomDetail>("/rooms/first"),
 };
 
-// Auth
+// Auth types
+export type Scope = "admin" | "general" | "immersion";
+
 export const auth = {
   login: (password: string) =>
-    fetchAPI<{ message: string }>("/auth/login", {
+    fetchAPI<{ message: string; scope: Scope }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ password }),
     }),
@@ -102,7 +104,7 @@ export const auth = {
       method: "POST",
     }),
 
-  me: () => fetchAPI<{ authenticated: boolean }>("/auth/me"),
+  me: () => fetchAPI<{ authenticated: boolean; scope: Scope | null }>("/auth/me"),
 };
 
 // Messages

@@ -7,8 +7,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List
 
-from ..db import get_db, VirtualConversation, VirtualParticipant, VirtualMessage
-from ..auth import get_current_session
+from ..db import get_db, VirtualConversation, VirtualParticipant, VirtualMessage, RoomMember
+from ..auth import get_current_session, get_current_scope, get_allowed_room_ids, Scope
 from ..schemas.virtual_chat import (
     CreateConversationRequest,
     ConversationResponse,
@@ -80,11 +80,27 @@ def _build_conversation_with_messages_response(
 async def create_conversation(
     request: CreateConversationRequest,
     db: Session = Depends(get_db),
-    session: dict = Depends(get_current_session),
+    scope: Scope = Depends(get_current_scope),
 ):
     """Create a new virtual conversation with the specified participants."""
     if not request.participant_ids:
         raise HTTPException(status_code=400, detail="At least one participant is required")
+    
+    # Validate that all participants have messages in accessible rooms
+    allowed_rooms = get_allowed_room_ids(scope)
+    accessible_person_ids = set(
+        r[0] for r in db.query(RoomMember.person_id)
+        .filter(RoomMember.room_id.in_(allowed_rooms))
+        .distinct()
+        .all()
+    )
+    
+    for person_id in request.participant_ids:
+        if person_id not in accessible_person_ids:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Person {person_id} is not accessible with your current scope"
+            )
     
     service = get_virtual_chat_service()
     

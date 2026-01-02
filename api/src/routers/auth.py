@@ -1,33 +1,36 @@
-from fastapi import APIRouter, Response, Depends, HTTPException, status
+from fastapi import APIRouter, Response, Depends, HTTPException, status, Request
 
 from ..auth import (
     verify_password,
+    verify_password_and_get_scope,
     hash_password,
     create_session_token,
     set_session_cookie,
     clear_session_cookie,
     get_current_session,
+    get_scope_from_token,
 )
 from ..config import get_settings
-from ..schemas.auth import LoginRequest, AuthStatus
+from ..schemas.auth import LoginRequest, LoginResponse, AuthStatus
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 
 
-@router.post("/login")
+@router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest, response: Response):
-    """Login with the shared archive password."""
-    if not verify_password(request.password, settings.archive_password_hash):
+    """Login with scoped password."""
+    scope = verify_password_and_get_scope(request.password)
+    if not scope:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password"
         )
     
-    token = create_session_token()
+    token = create_session_token(scope=scope)
     set_session_cookie(response, token)
     
-    return {"message": "Login successful"}
+    return LoginResponse(message="Login successful", scope=scope)
 
 
 @router.post("/logout")
@@ -39,8 +42,9 @@ async def logout(response: Response):
 
 @router.get("/me", response_model=AuthStatus)
 async def get_auth_status(session: str = Depends(get_current_session)):
-    """Check if the current session is valid."""
-    return AuthStatus(authenticated=True)
+    """Check if the current session is valid and return scope."""
+    scope = get_scope_from_token(session)
+    return AuthStatus(authenticated=True, scope=scope)
 
 
 @router.post("/change-password")

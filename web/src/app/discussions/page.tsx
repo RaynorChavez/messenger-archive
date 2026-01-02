@@ -18,6 +18,7 @@ import {
 import { formatRelativeTime, truncate } from "@/lib/utils";
 import { Sparkles, Play, Loader2, AlertCircle, Users, MessageSquare, Tag, Search, X, RefreshCw, ChevronDown } from "lucide-react";
 import { useRoom } from "@/contexts/room-context";
+import { useAuth } from "@/contexts/auth-context";
 
 function TopicPill({ topic, selected, onClick }: { topic: TopicBrief | null; selected: boolean; onClick: () => void }) {
   const isAll = topic === null;
@@ -98,6 +99,9 @@ export default function DiscussionsPage() {
 
   // Room context
   const { currentRoom } = useRoom();
+  
+  // Auth context for scope-based UI
+  const { scope } = useAuth();
 
   // Virtualization
   const parentRef = useRef<HTMLDivElement>(null);
@@ -410,86 +414,88 @@ export default function DiscussionsPage() {
             <Sparkles className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-bold">Discussions</h1>
           </div>
-          <div className="flex items-center gap-2">
-            {/* Analysis button with dropdown for full re-analysis */}
-            <div className="relative" ref={analysisMenuRef}>
-              <div className="flex">
-                <button
-                  onClick={() => handleStartAnalysis(analysisPreview?.incremental_available ? "incremental" : "full")}
-                  disabled={!currentRoom || startingAnalysis || isRunning || (analysisPreview?.incremental_available && analysisPreview.new_messages === 0)}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-l-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {startingAnalysis || isRunning ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                  {isRunning 
-                    ? `Analyzing${analysisStatus?.mode === "incremental" ? " (incremental)" : ""}...` 
-                    : analysisPreview?.incremental_available 
-                      ? analysisPreview.new_messages > 0 
-                        ? `Analyze (${analysisPreview.new_messages} new)`
-                        : "Up to date"
-                      : "Analyze All"
-                  }
-                </button>
-                <button
-                  onClick={() => setShowAnalysisMenu(!showAnalysisMenu)}
-                  disabled={!currentRoom || startingAnalysis || isRunning}
-                  className="inline-flex items-center px-2 py-2 bg-primary text-primary-foreground rounded-r-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed border-l border-primary-foreground/20"
-                >
-                  <ChevronDown className="h-4 w-4" />
-                </button>
-              </div>
-              
-              {/* Dropdown menu */}
-              {showAnalysisMenu && (
-                <div className="absolute right-0 mt-1 w-56 bg-card border rounded-lg shadow-lg z-50">
-                  <div className="p-1">
-                    {analysisPreview?.incremental_available && analysisPreview.new_messages > 0 && (
+          {scope === "admin" && (
+            <div className="flex items-center gap-2">
+              {/* Analysis button with dropdown for full re-analysis */}
+              <div className="relative" ref={analysisMenuRef}>
+                <div className="flex">
+                  <button
+                    onClick={() => handleStartAnalysis(analysisPreview?.incremental_available ? "incremental" : "full")}
+                    disabled={!currentRoom || startingAnalysis || isRunning || (analysisPreview?.incremental_available && analysisPreview.new_messages === 0)}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-l-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {startingAnalysis || isRunning ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
+                    {isRunning 
+                      ? `Analyzing${analysisStatus?.mode === "incremental" ? " (incremental)" : ""}...` 
+                      : analysisPreview?.incremental_available 
+                        ? analysisPreview.new_messages > 0 
+                          ? `Analyze (${analysisPreview.new_messages} new)`
+                          : "Up to date"
+                        : "Analyze All"
+                    }
+                  </button>
+                  <button
+                    onClick={() => setShowAnalysisMenu(!showAnalysisMenu)}
+                    disabled={!currentRoom || startingAnalysis || isRunning}
+                    className="inline-flex items-center px-2 py-2 bg-primary text-primary-foreground rounded-r-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed border-l border-primary-foreground/20"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+                </div>
+                
+                {/* Dropdown menu */}
+                {showAnalysisMenu && (
+                  <div className="absolute right-0 mt-1 w-56 bg-card border rounded-lg shadow-lg z-50">
+                    <div className="p-1">
+                      {analysisPreview?.incremental_available && analysisPreview.new_messages > 0 && (
+                        <button
+                          onClick={() => handleStartAnalysis("incremental")}
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-md flex items-center gap-2"
+                        >
+                          <Play className="h-4 w-4" />
+                          <div>
+                            <div className="font-medium">Incremental</div>
+                            <div className="text-xs text-muted-foreground">
+                              {analysisPreview.new_messages} new messages + {analysisPreview.context_messages} context
+                            </div>
+                          </div>
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleStartAnalysis("incremental")}
+                        onClick={() => handleStartAnalysis("full")}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-md flex items-center gap-2"
                       >
-                        <Play className="h-4 w-4" />
+                        <RefreshCw className="h-4 w-4" />
                         <div>
-                          <div className="font-medium">Incremental</div>
+                          <div className="font-medium">Full Re-analysis</div>
                           <div className="text-xs text-muted-foreground">
-                            {analysisPreview.new_messages} new messages + {analysisPreview.context_messages} context
+                            Re-analyze all {analysisPreview?.total_messages.toLocaleString()} messages
                           </div>
                         </div>
                       </button>
-                    )}
-                    <button
-                      onClick={() => handleStartAnalysis("full")}
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-md flex items-center gap-2"
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      <div>
-                        <div className="font-medium">Full Re-analysis</div>
-                        <div className="text-xs text-muted-foreground">
-                          Re-analyze all {analysisPreview?.total_messages.toLocaleString()} messages
-                        </div>
-                      </div>
-                    </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
+              
+              <button
+                onClick={handleStartClassification}
+                disabled={!currentRoom || startingClassification || isClassifying || data.length === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 border rounded-lg font-medium hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {startingClassification || isClassifying ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Tag className="h-4 w-4" />
+                )}
+                {isClassifying ? "Classifying..." : "Classify Topics"}
+              </button>
             </div>
-            
-            <button
-              onClick={handleStartClassification}
-              disabled={!currentRoom || startingClassification || isClassifying || data.length === 0}
-              className="inline-flex items-center gap-2 px-4 py-2 border rounded-lg font-medium hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {startingClassification || isClassifying ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Tag className="h-4 w-4" />
-              )}
-              {isClassifying ? "Classifying..." : "Classify Topics"}
-            </button>
-          </div>
+          )}
         </div>
 
         {/* Progress bars */}

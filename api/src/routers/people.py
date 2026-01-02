@@ -10,7 +10,7 @@ import threading
 import bcrypt
 
 from ..db import get_db, Person, Message, Room, RoomMember, SessionLocal, PersonSummary
-from ..auth import get_current_session
+from ..auth import get_current_session, get_current_scope, get_allowed_room_ids, Scope
 from ..schemas.person import PersonResponse, PersonListResponse, PersonUpdate
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
 from ..services.ai import get_ai_service, RateLimitExceeded
@@ -32,11 +32,16 @@ async def list_people(
     search: Optional[str] = None,
     room_id: Optional[int] = Query(None, description="Filter by room membership"),
     db: Session = Depends(get_db),
-    session: str = Depends(get_current_session),
+    scope: Scope = Depends(get_current_scope),
 ):
-    """List all people with message counts. Optionally filter by room membership."""
+    """List all people with message counts. Filtered by scope's accessible rooms."""
+    allowed_rooms = get_allowed_room_ids(scope)
     
+    # If room_id specified, verify access
     if room_id is not None:
+        if room_id not in allowed_rooms:
+            from fastapi import HTTPException, status
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this room")
         # When filtering by room, use room_members table for accurate per-room stats
         query = (
             db.query(
@@ -68,20 +73,21 @@ async def list_people(
                 ai_chat_enabled=person.ai_chat_enabled
             ))
     else:
-        # No room filter - show all people with global message counts
+        # No room filter - show people with message counts from allowed rooms only
         message_count_subq = (
             db.query(
                 Message.sender_id,
                 func.count(Message.id).label("message_count"),
                 func.max(Message.timestamp).label("last_message_at")
             )
+            .filter(Message.room_id.in_(allowed_rooms))  # Filter by allowed rooms
             .group_by(Message.sender_id)
             .subquery()
         )
         
         query = (
             db.query(Person, message_count_subq.c.message_count, message_count_subq.c.last_message_at)
-            .outerjoin(message_count_subq, Person.id == message_count_subq.c.sender_id)
+            .join(message_count_subq, Person.id == message_count_subq.c.sender_id)  # Use join to only show people with messages
         )
         
         if search:

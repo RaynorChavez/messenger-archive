@@ -14,7 +14,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql://archive:password@localhost:5432/messenger_archive"
     
-    # Auth
+    # Auth - Scoped passwords
+    admin_password_hash: str = ""
+    general_password_hash: str = ""
+    immersion_password_hash: str = ""
+    # Legacy fallback (maps to admin scope)
     archive_password_hash: str = ""
     session_secret: str = "dev-secret-change-in-production"
     session_expire_hours: int = 24 * 7  # 1 week

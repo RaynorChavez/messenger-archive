@@ -1,13 +1,15 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 import { rooms, type RoomListItem } from "@/lib/api";
+import { useAuth } from "./auth-context";
 
 interface RoomContextType {
   rooms: RoomListItem[];
   currentRoom: RoomListItem | null;
   setCurrentRoomId: (id: number) => void;
   isLoading: boolean;
+  refetch: () => Promise<void>;
 }
 
 const RoomContext = createContext<RoomContextType | undefined>(undefined);
@@ -16,29 +18,43 @@ export function RoomProvider({ children }: { children: ReactNode }) {
   const [roomList, setRoomList] = useState<RoomListItem[]>([]);
   const [currentRoomId, setCurrentRoomId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const { scope, isLoading: authLoading } = useAuth();
 
-  // Load rooms on mount
-  useEffect(() => {
-    async function loadRooms() {
-      try {
-        const response = await rooms.list();
-        setRoomList(response.rooms);
-        
-        // Set default room from localStorage or first room
-        const savedRoomId = localStorage.getItem("currentRoomId");
-        if (savedRoomId && response.rooms.some(r => r.id === Number(savedRoomId))) {
-          setCurrentRoomId(Number(savedRoomId));
-        } else if (response.rooms.length > 0) {
-          setCurrentRoomId(response.rooms[0].id);
-        }
-      } catch (error) {
-        console.error("Failed to load rooms:", error);
-      } finally {
-        setIsLoading(false);
-      }
+  const loadRooms = useCallback(async () => {
+    if (!scope) {
+      // Not authenticated, clear rooms
+      setRoomList([]);
+      setCurrentRoomId(null);
+      setIsLoading(false);
+      return;
     }
-    loadRooms();
-  }, []);
+    
+    try {
+      setIsLoading(true);
+      const response = await rooms.list();
+      setRoomList(response.rooms);
+      
+      // Set default room from localStorage or first room
+      const savedRoomId = localStorage.getItem("currentRoomId");
+      if (savedRoomId && response.rooms.some(r => r.id === Number(savedRoomId))) {
+        setCurrentRoomId(Number(savedRoomId));
+      } else if (response.rooms.length > 0) {
+        setCurrentRoomId(response.rooms[0].id);
+      }
+    } catch (error) {
+      console.error("Failed to load rooms:", error);
+      setRoomList([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [scope]);
+
+  // Load rooms when auth is ready and scope changes
+  useEffect(() => {
+    if (!authLoading) {
+      loadRooms();
+    }
+  }, [authLoading, loadRooms]);
 
   // Save current room to localStorage
   useEffect(() => {
@@ -55,7 +71,8 @@ export function RoomProvider({ children }: { children: ReactNode }) {
         rooms: roomList,
         currentRoom,
         setCurrentRoomId,
-        isLoading,
+        isLoading: isLoading || authLoading,
+        refetch: loadRooms,
       }}
     >
       {children}

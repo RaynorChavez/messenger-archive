@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { auth } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { refetch } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,8 +18,16 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await auth.login(password);
-      router.push("/");
+      const result = await auth.login(password);
+      await refetch(); // Update auth context with new scope
+      
+      // Redirect based on scope
+      if (result.scope === "admin") {
+        router.push("/");
+      } else {
+        // Both general and immersion go to virtual-chat
+        router.push("/virtual-chat");
+      }
     } catch (err) {
       setError("Invalid password");
     } finally {

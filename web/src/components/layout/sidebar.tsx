@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRoom } from "@/contexts/room-context";
+import { useAuth } from "@/contexts/auth-context";
+import { Scope } from "@/lib/api";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -29,9 +31,18 @@ const navigation = [
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 
+// Define which nav items each scope can see
+// All scopes get full access except Settings (admin only)
+const scopeNavAccess: Record<Scope, string[]> = {
+  admin: ["Dashboard", "Search", "Messages", "Threads", "Discussions", "Virtual Chat", "People", "Database", "Settings"],
+  general: ["Dashboard", "Search", "Messages", "Threads", "Discussions", "Virtual Chat", "People", "Database"],
+  immersion: ["Dashboard", "Search", "Messages", "Threads", "Discussions", "Virtual Chat", "People", "Database"],
+};
+
 export function Sidebar() {
   const pathname = usePathname();
   const { currentRoom } = useRoom();
+  const { scope } = useAuth();
 
   // Get short room name (remove common suffixes)
   const getShortName = (name: string | null | undefined) => {
@@ -40,6 +51,11 @@ export function Sidebar() {
   };
 
   const roomName = getShortName(currentRoom?.name);
+  
+  // Filter navigation based on scope
+  const visibleNav = scope 
+    ? navigation.filter(item => scopeNavAccess[scope]?.includes(item.name))
+    : navigation;
 
   return (
     <div className="flex h-full w-64 flex-col bg-card border-r">
@@ -65,7 +81,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-3 py-4">
-        {navigation.map((item) => {
+        {visibleNav.map((item) => {
           const isActive =
             pathname === item.href ||
             (item.href !== "/" && pathname.startsWith(item.href));
