@@ -111,18 +111,18 @@ async def _embed_topics(db: Session, topic_ids: list):
         logger.error(f"Failed to embed topics: {e}")
 
 
-def run_analysis_sync(run_id: int, db_url: str, api_key: str, mode: str = "full"):
+def run_analysis_sync(run_id: int, db_url: str, api_key: str, mode: str = "full", room_id: int = None):
     """Background task to run discussion analysis in a separate thread."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_run_analysis_async(run_id, db_url, api_key, mode))
+        loop.run_until_complete(_run_analysis_async(run_id, db_url, api_key, mode, room_id))
     finally:
         loop.close()
 
 
-async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str = "full"):
+async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str = "full", room_id: int = None):
     """Actual analysis logic. Supports 'full' or 'incremental' mode."""
     global _analysis_running
     
@@ -144,19 +144,20 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str 
             return
         
         if mode == "full":
-            # Delete any previous discussions (replace mode)
+            # Delete any previous discussions for this room (replace mode)
             previous_runs = db.query(DiscussionAnalysisRun).filter(
-                DiscussionAnalysisRun.id != run_id
+                DiscussionAnalysisRun.id != run_id,
+                DiscussionAnalysisRun.room_id == room_id
             ).all()
             for prev_run in previous_runs:
                 db.delete(prev_run)
             db.commit()
-            logger.info("Full mode: deleted previous analysis runs")
+            logger.info(f"Full mode: deleted previous analysis runs for room {room_id}")
         else:
             logger.info("Incremental mode: preserving existing discussions")
         
-        # Create analyzer with run_id so it can write to DB directly
-        analyzer = DiscussionAnalyzer(api_key=api_key, db_session=db, run_id=run_id)
+        # Create analyzer with run_id and room_id so it can write to DB directly
+        analyzer = DiscussionAnalyzer(api_key=api_key, db_session=db, run_id=run_id, room_id=room_id)
         
         # Progress callback
         def update_progress(windows_done: int, total: int):
@@ -183,8 +184,8 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str 
                 update_progress_callback=update_progress
             )
             run.mode = "full"
-            # Set end_message_id to the last message analyzed
-            last_msg = db.query(Message).order_by(Message.id.desc()).first()
+            # Set end_message_id to the last message analyzed in this room
+            last_msg = db.query(Message).filter(Message.room_id == room_id).order_by(Message.id.desc()).first()
             if last_msg:
                 run.end_message_id = last_msg.id
         
@@ -273,11 +274,12 @@ async def _run_analysis_async(run_id: int, db_url: str, api_key: str, mode: str 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def start_analysis(
+    room_id: int = Query(..., description="Room ID to analyze"),
     mode: str = Query("incremental", pattern="^(incremental|full)$", description="Analysis mode: 'incremental' (only new messages) or 'full' (all messages)"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Start a new discussion analysis.
+    """Start a new discussion analysis for a specific room.
     
     - incremental (default): Only process new messages since last completed run. Cost-efficient.
     - full: Delete all discussions and re-analyze from scratch.
@@ -291,9 +293,15 @@ async def start_analysis(
     if _analysis_running:
         raise HTTPException(status_code=409, detail="Analysis already running")
     
-    # Check for stale runs and mark them as failed
+    # Validate room exists
+    room = db.query(Room).filter(Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    # Check for stale runs and mark them as failed (for this room)
     stale_run = db.query(DiscussionAnalysisRun).filter(
-        DiscussionAnalysisRun.status == "running"
+        DiscussionAnalysisRun.status == "running",
+        DiscussionAnalysisRun.room_id == room_id
     ).first()
     
     if stale_run and stale_run.started_at:
@@ -314,7 +322,8 @@ async def start_analysis(
     # Create a new analysis run
     run = DiscussionAnalysisRun(
         status="running",
-        started_at=datetime.utcnow()
+        started_at=datetime.utcnow(),
+        room_id=room_id
     )
     db.add(run)
     db.commit()
@@ -323,19 +332,20 @@ async def start_analysis(
     # Start in a separate thread to not block the main event loop
     thread = threading.Thread(
         target=run_analysis_sync,
-        args=(run.id, settings.database_url, settings.gemini_api_key, mode),
+        args=(run.id, settings.database_url, settings.gemini_api_key, mode, room_id),
         daemon=True
     )
     thread.start()
     
     return AnalyzeResponse(
-        message=f"Analysis started ({mode} mode)",
+        message=f"Analysis started ({mode} mode) for room {room.name or room_id}",
         run_id=run.id
     )
 
 
 @router.get("/analyze/preview")
 async def preview_analysis(
+    room_id: int = Query(..., description="Room ID to preview"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
@@ -346,14 +356,16 @@ async def preview_analysis(
     - How many new messages would be processed
     - Last completed analysis info
     """
-    # Get last completed run
+    # Get last completed run for this room
     last_run = db.query(DiscussionAnalysisRun).filter(
         DiscussionAnalysisRun.status == "completed",
-        DiscussionAnalysisRun.end_message_id.isnot(None)
+        DiscussionAnalysisRun.end_message_id.isnot(None),
+        DiscussionAnalysisRun.room_id == room_id
     ).order_by(desc(DiscussionAnalysisRun.id)).first()
     
-    # Count total messages
+    # Count total messages in this room
     total_messages = db.query(func.count(Message.id)).filter(
+        Message.room_id == room_id,
         Message.content.isnot(None),
         Message.content != ""
     ).scalar() or 0
@@ -362,14 +374,15 @@ async def preview_analysis(
         # No previous run - must do full analysis
         return {
             "incremental_available": False,
-            "reason": "No previous completed analysis",
+            "reason": "No previous completed analysis for this room",
             "new_messages": total_messages,
             "total_messages": total_messages,
             "last_analysis": None
         }
     
-    # Count new messages since last run
+    # Count new messages since last run (in this room)
     new_messages = db.query(func.count(Message.id)).filter(
+        Message.room_id == room_id,
         Message.id > last_run.end_message_id,
         Message.content.isnot(None),
         Message.content != ""
@@ -390,15 +403,18 @@ async def preview_analysis(
 
 @router.get("/analysis-status", response_model=AnalysisStatusResponse)
 async def get_analysis_status(
+    room_id: int = Query(..., description="Room ID to get status for"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Get the status of the latest analysis run.
+    """Get the status of the latest analysis run for a specific room.
     
     Detects stale 'running' states when the analysis thread died (e.g., container restart).
     A run is considered stale if it's been 'running' for more than 10 minutes without progress.
     """
-    run = db.query(DiscussionAnalysisRun).order_by(desc(DiscussionAnalysisRun.id)).first()
+    run = db.query(DiscussionAnalysisRun).filter(
+        DiscussionAnalysisRun.room_id == room_id
+    ).order_by(desc(DiscussionAnalysisRun.id)).first()
     
     if not run:
         return AnalysisStatusResponse(status="none")
@@ -821,18 +837,18 @@ async def get_gap_messages(
 _topic_classification_running = False
 
 
-def run_topic_classification_sync(run_id: int, db_url: str, api_key: str):
+def run_topic_classification_sync(run_id: int, db_url: str, api_key: str, room_id: int):
     """Background task to run topic classification in a separate thread."""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_run_topic_classification_async(run_id, db_url, api_key))
+        loop.run_until_complete(_run_topic_classification_async(run_id, db_url, api_key, room_id))
     finally:
         loop.close()
 
 
-async def _run_topic_classification_async(run_id: int, db_url: str, api_key: str):
+async def _run_topic_classification_async(run_id: int, db_url: str, api_key: str, room_id: int):
     """Actual topic classification logic."""
     global _topic_classification_running
     
@@ -854,7 +870,7 @@ async def _run_topic_classification_async(run_id: int, db_url: str, api_key: str
             return
         
         # Create analyzer (run_id=0 since we're not doing discussion analysis)
-        analyzer = DiscussionAnalyzer(api_key=api_key, db_session=db, run_id=0)
+        analyzer = DiscussionAnalyzer(api_key=api_key, db_session=db, run_id=0, room_id=room_id)
         
         # Run classification
         result = await analyzer.classify_topics()
@@ -890,11 +906,12 @@ async def _run_topic_classification_async(run_id: int, db_url: str, api_key: str
 
 @router.get("/topics/list", response_model=TopicListResponse)
 async def list_topics(
+    room_id: int = Query(..., description="Room ID to filter topics by"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """List all topics with discussion counts."""
-    topics = db.query(Topic).all()
+    """List all topics for a specific room with discussion counts."""
+    topics = db.query(Topic).filter(Topic.room_id == room_id).all()
     
     topic_briefs = []
     for topic in topics:
@@ -915,15 +932,21 @@ async def list_topics(
 
 @router.post("/classify-topics", response_model=ClassifyTopicsResponse)
 async def start_topic_classification(
+    room_id: int = Query(..., description="Room ID to classify topics for"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Start topic classification for all discussions."""
+    """Start topic classification for all discussions in a specific room."""
     import threading
     global _topic_classification_running
     
     if _topic_classification_running:
         raise HTTPException(status_code=409, detail="Topic classification already running")
+    
+    # Validate room exists
+    room = db.query(Room).filter(Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
     
     settings = get_settings()
     if not settings.gemini_api_key:
@@ -932,7 +955,8 @@ async def start_topic_classification(
     # Create a new classification run
     run = TopicClassificationRun(
         status="running",
-        started_at=datetime.utcnow()
+        started_at=datetime.utcnow(),
+        room_id=room_id
     )
     db.add(run)
     db.commit()
@@ -941,25 +965,28 @@ async def start_topic_classification(
     # Start in a separate thread
     thread = threading.Thread(
         target=run_topic_classification_sync,
-        args=(run.id, settings.database_url, settings.gemini_api_key),
+        args=(run.id, settings.database_url, settings.gemini_api_key, room_id),
         daemon=True
     )
     thread.start()
     
     return ClassifyTopicsResponse(
-        message="Topic classification started",
+        message=f"Topic classification started for room {room.name or room_id}",
         run_id=run.id
     )
 
 
 @router.get("/classify-topics/status", response_model=TopicClassificationStatusResponse)
 async def get_topic_classification_status(
+    room_id: int = Query(..., description="Room ID to get status for"),
     db: Session = Depends(get_db),
     session: str = Depends(get_current_session),
 ):
-    """Get the status of topic classification."""
-    # Get the most recent run
-    run = db.query(TopicClassificationRun).order_by(desc(TopicClassificationRun.id)).first()
+    """Get the status of topic classification for a specific room."""
+    # Get the most recent run for this room
+    run = db.query(TopicClassificationRun).filter(
+        TopicClassificationRun.room_id == room_id
+    ).order_by(desc(TopicClassificationRun.id)).first()
     
     if not run:
         return TopicClassificationStatusResponse(

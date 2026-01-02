@@ -1,128 +1,186 @@
-# TODO: Room-Scoped Discussions & Topics
+# Room-Scoped Discussions & Topics
 
-## Problem
+## Overview
 
-Currently, discussions analysis and topics are **global** - they span all rooms (group chats). This doesn't make sense because:
-- Different GCs have different conversations
-- Topics in "General Chat" may be different from "Immersion"
-- Analysis should be per-room so you can analyze one GC without affecting others
+Make discussions, topics, and analysis **per-room** so each group chat has independent analysis.
 
-## Current State
+## Current State (Before)
 
-### What's scoped by room (working):
-- ✅ Messages list - filtered by room_id
-- ✅ Discussions list - accepts room_id parameter, filters by messages in that room
-- ✅ Timeline - accepts room_id parameter
+- Analysis runs globally across ALL messages from ALL rooms
+- Topics are global (shared across rooms)
+- Discussions infer room from messages but aren't directly scoped
+- 2 rooms: "General Chat" (183 discussions) and "Immersion" (0 discussions)
 
-### What's NOT scoped by room (needs fix):
-- ❌ **Analysis runs** - runs on ALL messages globally
-- ❌ **Discussions** - don't have a room_id, inferred from messages
-- ❌ **Topics** - global, not per-room
-- ❌ **Topic classification** - runs globally
+## Goal (After)
 
-## Schema Changes Needed
+- Analyzing "General Chat" only processes messages from that room
+- Topics are unique per room (e.g., "Philosophy" in General Chat vs "Philosophy" in Immersion)
+- Each room has independent analysis history
+- `room_id` is **required** on all analysis/classification endpoints
 
-### 1. `discussion_analysis_runs` table
-Add `room_id` column:
+---
+
+## Schema Changes
+
+### Delete Existing Data (Starting Fresh)
+
 ```sql
-ALTER TABLE discussion_analysis_runs ADD COLUMN room_id INTEGER REFERENCES rooms(id);
+DELETE FROM discussion_topics;
+DELETE FROM discussion_messages;
+DELETE FROM discussions;
+DELETE FROM topics;
+DELETE FROM discussion_analysis_runs;
+DELETE FROM topic_classification_runs;
 ```
 
-### 2. `discussions` table
-Add `room_id` column:
+### Add room_id Columns
+
 ```sql
-ALTER TABLE discussions ADD COLUMN room_id INTEGER REFERENCES rooms(id);
+ALTER TABLE discussion_analysis_runs 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE discussions 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE topics 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE topic_classification_runs 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
 ```
 
-### 3. `topics` table
-Add `room_id` column (topics become per-room):
+### Update Topics Unique Constraint
+
 ```sql
-ALTER TABLE topics ADD COLUMN room_id INTEGER REFERENCES rooms(id);
--- Drop unique constraint on name, add unique on (name, room_id)
 ALTER TABLE topics DROP CONSTRAINT topics_name_key;
 ALTER TABLE topics ADD CONSTRAINT topics_name_room_unique UNIQUE (name, room_id);
 ```
 
-### 4. `topic_classification_runs` table
-Add `room_id` column:
-```sql
-ALTER TABLE topic_classification_runs ADD COLUMN room_id INTEGER REFERENCES rooms(id);
+---
+
+## Backend Changes
+
+### `api/src/db.py` - Model Updates
+
+Add `room_id` column + relationship to:
+- `DiscussionAnalysisRun`
+- `Discussion`
+- `Topic`
+- `TopicClassificationRun`
+
+### `api/src/services/discussions.py` - Analyzer Updates
+
+| Location | Method | Change |
+|----------|--------|--------|
+| Constructor | `__init__()` | Accept `room_id` parameter, store as `self.room_id` |
+| Line ~590 | `analyze_all_messages()` | Add `.filter(Message.room_id == self.room_id)` |
+| Line ~687 | `_load_incremental_context()` | Add room filter to context messages query |
+| Line ~703 | `_load_incremental_context()` | Add `.filter(Discussion.room_id == self.room_id)` |
+| Line ~826 | `analyze_incremental()` | Add `.filter(Message.room_id == self.room_id)` |
+| `_store_discussion()` | Store discussion | Set `room_id=self.room_id` on new discussions |
+| Topic classifier | Classification | Filter by room, create room-scoped topics |
+
+### `api/src/routers/discussions.py` - Endpoint Updates
+
+| Endpoint | Change |
+|----------|--------|
+| `POST /analyze` | Add `room_id: int` required query param |
+| `GET /analyze/preview` | Add `room_id: int` required query param |
+| `GET /analysis-status` | Add `room_id: int` required query param |
+| `POST /classify-topics` | Add `room_id: int` required query param |
+| `GET /classify-topics/status` | Add `room_id: int` required query param |
+| `GET /topics/list` | Make `room_id: int` required |
+
+---
+
+## Frontend Changes
+
+### `web/src/lib/api.ts` - API Function Updates
+
+```typescript
+// All these get room_id as required first parameter:
+analyze: (roomId: number, mode?: "incremental" | "full") => ...
+analysisPreview: (roomId: number) => ...
+analysisStatus: (roomId: number) => ...
+classifyTopics: (roomId: number) => ...
+topicClassificationStatus: (roomId: number) => ...
+listTopics: (roomId: number) => ...
 ```
 
-## API Changes Needed
+### `web/src/app/discussions/page.tsx` - Page Updates
 
-### `/discussions/analyze` endpoint
-- Add `room_id` required parameter
-- Filter messages by room when analyzing
-- Store room_id in the analysis run
+- Pass `currentRoom.id` to all analysis/classification API calls
+- Disable analyze/classify buttons if no room selected
+- Update polling to include room_id
 
-### `/discussions/classify-topics` endpoint
-- Add `room_id` required parameter
-- Only classify discussions for that room
-- Create topics scoped to that room
+---
 
-### `/discussions/topics/list` endpoint
-- Already updated to accept `room_id` parameter (partial fix done)
-- Should require room_id once topics are per-room
+## Implementation Order
 
-### `/discussions/analysis-status` endpoint
-- Add `room_id` parameter to get status for specific room
+1. ✅ Write migration SQL
+2. ⬜ Update `api/src/db.py` - Add room_id to models
+3. ⬜ Update `api/src/services/discussions.py` - Add room filtering
+4. ⬜ Update `api/src/routers/discussions.py` - Add room_id params
+5. ⬜ Update `web/src/lib/api.ts` - Update function signatures
+6. ⬜ Update `web/src/app/discussions/page.tsx` - Pass room_id
+7. ⬜ Run migration locally
+8. ⬜ Test locally
+9. ⬜ Deploy to production
+10. ⬜ Run migration on production
 
-### `/discussions/analyze/preview` endpoint
-- Add `room_id` parameter
-
-## Frontend Changes Needed
-
-### `web/src/app/discussions/page.tsx`
-- Pass `currentRoom.id` to analyze endpoint
-- Pass `currentRoom.id` to classify-topics endpoint
-- Update status polling to be room-specific
-- Already passes room_id to list/timeline (done)
-
-### `web/src/lib/api.ts`
-- Update `analyze()` to accept room_id
-- Update `classifyTopics()` to accept room_id
-- Update `analysisStatus()` to accept room_id
-- Update `analysisPreview()` to accept room_id
-- `listTopics()` already updated (done)
-
-## Migration Strategy
-
-1. Add nullable room_id columns to all tables
-2. Backfill existing data:
-   - For discussions: infer room_id from the first message in the discussion
-   - For topics: duplicate topics for each room that has discussions with that topic
-   - For analysis runs: set to NULL (legacy global runs)
-3. Make room_id NOT NULL for new rows
-4. Update all API endpoints
-5. Update frontend
+---
 
 ## Files to Modify
 
-### Backend
-- `api/src/db.py` - Add room_id columns to models
-- `api/src/routers/discussions.py` - Update all endpoints
-- `api/src/services/discussions.py` - Update DiscussionAnalyzer to be room-aware
+| File | Changes |
+|------|---------|
+| `api/src/db.py` | Add room_id to 4 models |
+| `api/src/services/discussions.py` | Add room filtering to analyzer |
+| `api/src/routers/discussions.py` | Add room_id param to 6 endpoints |
+| `web/src/lib/api.ts` | Update 6 function signatures |
+| `web/src/app/discussions/page.tsx` | Pass room_id to all calls |
 
-### Frontend
-- `web/src/app/discussions/page.tsx` - Pass room_id to all operations
-- `web/src/lib/api.ts` - Update API function signatures
+---
 
-## Partial Fix Applied (2026-01-02)
+## Migration Script
 
-The following partial fix was applied but is incomplete:
-- `listTopics()` API now accepts `room_id` parameter
-- Frontend passes `room_id` when loading topics
-- Topics are filtered to only show those with discussions in the selected room
+Save as `scripts/migrate-room-scoping.sql`:
 
-This doesn't fully work because:
-- Analysis still runs globally
-- Topics themselves are still global (just filtered in display)
-- New analysis will still analyze all rooms
+```sql
+-- Room-scoping migration for discussions & topics
+-- This deletes all existing analysis data and adds room_id columns
 
-## Notes
+-- Step 1: Delete existing data (starting fresh per-room)
+DELETE FROM discussion_topics;
+DELETE FROM discussion_messages;
+DELETE FROM discussions;
+DELETE FROM topics;
+DELETE FROM discussion_analysis_runs;
+DELETE FROM topic_classification_runs;
 
-- There are 183 discussions in General Chat, only 2 in Immersion
-- 10 topics exist currently (all global)
-- Backup script updated to backup all 3 databases (messenger_archive, synapse, mautrix_meta)
-- Backups run every 6 hours via cron
+-- Step 2: Add room_id columns
+ALTER TABLE discussion_analysis_runs 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE discussions 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE topics 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+ALTER TABLE topic_classification_runs 
+ADD COLUMN room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE;
+
+-- Step 3: Update topics unique constraint (name unique per room, not globally)
+ALTER TABLE topics DROP CONSTRAINT topics_name_key;
+ALTER TABLE topics ADD CONSTRAINT topics_name_room_unique UNIQUE (name, room_id);
+```
+
+Run with:
+```bash
+# Local
+docker exec -i archive-postgres psql -U archive -d messenger_archive < scripts/migrate-room-scoping.sql
+
+# Production
+ssh ubuntu@98.86.15.121 "docker exec -i archive-postgres psql -U archive -d messenger_archive" < scripts/migrate-room-scoping.sql
+```

@@ -58,8 +58,8 @@ class DiscussionAnalyzer:
     """Analyzes messages to detect thematic discussions using Gemini."""
     
     MODEL = "gemini-3-flash-preview"  # Same model as profile summaries
-    WINDOW_SIZE = 30  # Small windows for reliable JSON output
-    OVERLAP_SIZE = 10  # ~33% overlap
+    WINDOW_SIZE = 300  # Messages per window
+    OVERLAP_SIZE = 40  # ~13% overlap
     MAX_MESSAGES_PER_DISCUSSION = 500
     THINKING_BUDGET = 712
     
@@ -129,17 +129,19 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         "required": ["classifications", "discussions_ended", "new_discussions"]
     }
 
-    def __init__(self, api_key: str, db_session: Session, run_id: int):
+    def __init__(self, api_key: str, db_session: Session, run_id: int, room_id: int):
         """Initialize the analyzer.
         
         Args:
             api_key: Google AI API key
             db_session: SQLAlchemy session for database access
             run_id: The analysis run ID for tracking
+            room_id: The room ID to analyze (required, scopes all queries)
         """
         self.client = genai.Client(api_key=api_key)
         self.db = db_session
         self.run_id = run_id
+        self.room_id = room_id
         self.state = AnalysisState()
         
         # Define the inspect_discussion tool
@@ -254,7 +256,7 @@ OUTPUT STRICT JSON (no markdown, no extra text):
                         response_mime_type="application/json",
                         response_schema=self.RESPONSE_SCHEMA,
                         temperature=1.0,
-                        max_output_tokens=8192,
+                        max_output_tokens=32768,
                         thinking_config=types.ThinkingConfig(thinking_budget=self.THINKING_BUDGET),
                     )
                 )
@@ -354,6 +356,7 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         topic_keywords = self._generate_topic_keywords(title, first_message_content)
         
         discussion = Discussion(
+            room_id=self.room_id,
             analysis_run_id=self.run_id,
             title=title,
             started_at=started_at,
@@ -585,9 +588,10 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         # Reset state
         self.state = AnalysisState()
         
-        # Fetch all messages ordered by timestamp
+        # Fetch all messages for this room, ordered by timestamp
         all_messages = (
             self.db.query(Message)
+            .filter(Message.room_id == self.room_id)
             .filter(Message.content.isnot(None))
             .filter(Message.content != "")
             .order_by(asc(Message.timestamp))
@@ -655,8 +659,9 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         from ..db import DiscussionAnalysisRun
         from sqlalchemy import desc
         
-        # Get last COMPLETED run (not failed or running)
+        # Get last COMPLETED run for this room (not failed or running)
         last_run = self.db.query(DiscussionAnalysisRun).filter(
+            DiscussionAnalysisRun.room_id == self.room_id,
             DiscussionAnalysisRun.status == "completed",
             DiscussionAnalysisRun.end_message_id.isnot(None)
         ).order_by(desc(DiscussionAnalysisRun.completed_at)).first()
@@ -682,9 +687,10 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         
         context_count = self.CONTEXT_WINDOWS * self.WINDOW_SIZE
         
-        # Load context messages (before and including cutoff)
+        # Load context messages for this room (before and including cutoff)
         context_messages = (
             self.db.query(Message)
+            .filter(Message.room_id == self.room_id)
             .filter(Message.id <= cutoff_message_id)
             .filter(Message.content.isnot(None))
             .filter(Message.content != "")
@@ -697,11 +703,12 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         context_messages = list(reversed(context_messages))
         context_start_id = context_messages[0].id if context_messages else None
         
-        # Load discussions that might still be active
+        # Load discussions for this room that might still be active
         # Consider discussions that ended within 48h of cutoff as potentially active
         cutoff_time = cutoff_msg.timestamp
         active_discussions = (
             self.db.query(Discussion)
+            .filter(Discussion.room_id == self.room_id)
             .filter(Discussion.ended_at >= cutoff_time - timedelta(hours=48))
             .all()
         )
@@ -821,9 +828,10 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         self.state = AnalysisState()
         self.rebuild_state_from_db(active_discussions)
         
-        # Get new messages (after cutoff)
+        # Get new messages for this room (after cutoff)
         new_messages = (
             self.db.query(Message)
+            .filter(Message.room_id == self.room_id)
             .filter(Message.id > cutoff_id)
             .filter(Message.content.isnot(None))
             .filter(Message.content != "")
@@ -1020,12 +1028,12 @@ Output JSON with topics and assignments.'''
         self,
         update_progress_callback=None
     ) -> Dict[str, Any]:
-        """Classify all discussions into topics using AI."""
+        """Classify all discussions for this room into topics using AI."""
         from ..db import Discussion, Topic, DiscussionTopic
         from ..schemas.discussion import TopicClassificationAIResponse
         
-        # Fetch all discussions
-        discussions = self.db.query(Discussion).all()
+        # Fetch all discussions for this room
+        discussions = self.db.query(Discussion).filter(Discussion.room_id == self.room_id).all()
         
         if not discussions:
             return {
@@ -1042,8 +1050,8 @@ Output JSON with topics and assignments.'''
                 "summary": d.summary or ""
             })
         
-        # Fetch existing topics
-        existing_topics = self.db.query(Topic).all()
+        # Fetch existing topics for this room
+        existing_topics = self.db.query(Topic).filter(Topic.room_id == self.room_id).all()
         existing_topics_data = [{"name": t.name, "description": t.description or ""} for t in existing_topics]
         
         # Build prompt
@@ -1108,8 +1116,9 @@ Output JSON with topics and assignments.'''
                     existing.description = topic_def.description
                     topic_name_to_id[topic_def.name] = existing.id
                 else:
-                    # Create new topic
+                    # Create new topic for this room
                     new_topic = Topic(
+                        room_id=self.room_id,
                         name=topic_def.name,
                         description=topic_def.description,
                         color=self.TOPIC_COLORS[color_index % len(self.TOPIC_COLORS)]

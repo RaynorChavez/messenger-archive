@@ -693,24 +693,36 @@ export const discussions = {
   timeline: (params?: { topic_id?: number; room_id?: number }) =>
     fetchAPI<TimelineResponse>("/discussions/timeline", { params }),
 
-  analyze: (mode: "incremental" | "full" = "incremental") =>
+  analyze: (roomId: number, mode: "incremental" | "full" = "incremental") =>
     fetchAPI<AnalyzeResponse>("/discussions/analyze", {
       method: "POST",
-      params: { mode },
+      params: { room_id: roomId, mode },
     }),
 
-  analysisPreview: () => fetchAPI<AnalysisPreview>("/discussions/analyze/preview"),
+  analysisPreview: (roomId: number) =>
+    fetchAPI<AnalysisPreview>("/discussions/analyze/preview", {
+      params: { room_id: roomId },
+    }),
 
-  analysisStatus: () => fetchAPI<AnalysisStatus>("/discussions/analysis-status"),
+  analysisStatus: (roomId: number) =>
+    fetchAPI<AnalysisStatus>("/discussions/analysis-status", {
+      params: { room_id: roomId },
+    }),
 
   // Topics
-  listTopics: () => fetchAPI<TopicListResponse>("/discussions/topics/list"),
-
-  classifyTopics: () =>
-    fetchAPI<ClassifyTopicsResponse>("/discussions/classify-topics", {
-      method: "POST",
+  listTopics: (roomId: number) =>
+    fetchAPI<TopicListResponse>("/discussions/topics/list", {
+      params: { room_id: roomId },
     }),
 
-  topicClassificationStatus: () =>
-    fetchAPI<TopicClassificationStatus>("/discussions/classify-topics/status"),
+  classifyTopics: (roomId: number) =>
+    fetchAPI<ClassifyTopicsResponse>("/discussions/classify-topics", {
+      method: "POST",
+      params: { room_id: roomId },
+    }),
+
+  topicClassificationStatus: (roomId: number) =>
+    fetchAPI<TopicClassificationStatus>("/discussions/classify-topics/status", {
+      params: { room_id: roomId },
+    }),
 };

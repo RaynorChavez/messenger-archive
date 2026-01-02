@@ -98,6 +98,7 @@ class DiscussionAnalysisRun(Base):
     __tablename__ = "discussion_analysis_runs"
     
     id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String, default="running")  # running, completed, failed
@@ -114,6 +115,7 @@ class DiscussionAnalysisRun(Base):
     new_messages_count = Column(Integer, default=0)  # Count of new messages processed
     context_messages_count = Column(Integer, default=0)  # Count of context messages loaded
     
+    room = relationship("Room")
     discussions = relationship("Discussion", back_populates="analysis_run", cascade="all, delete-orphan")
 
 
@@ -121,6 +123,7 @@ class Discussion(Base):
     __tablename__ = "discussions"
     
     id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
     analysis_run_id = Column(Integer, ForeignKey("discussion_analysis_runs.id", ondelete="CASCADE"), nullable=True)
     title = Column(Text, nullable=False)
     summary = Column(Text, nullable=True)
@@ -130,6 +133,7 @@ class Discussion(Base):
     participant_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
+    room = relationship("Room")
     analysis_run = relationship("DiscussionAnalysisRun", back_populates="discussions")
     message_links = relationship("DiscussionMessage", back_populates="discussion", cascade="all, delete-orphan")
     topics = relationship("Topic", secondary="discussion_topics", back_populates="discussions")
@@ -150,12 +154,18 @@ class Topic(Base):
     __tablename__ = "topics"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     color = Column(String(7), nullable=False)  # Hex color e.g. #6366f1
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
+    room = relationship("Room")
     discussions = relationship("Discussion", secondary="discussion_topics", back_populates="topics")
+    
+    __table_args__ = (
+        UniqueConstraint('name', 'room_id', name='topics_name_room_unique'),
+    )
 
 
 class DiscussionTopic(Base):
@@ -169,12 +179,15 @@ class TopicClassificationRun(Base):
     __tablename__ = "topic_classification_runs"
     
     id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(20), default="running")  # running, completed, failed
     topics_created = Column(Integer, default=0)
     discussions_classified = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+    
+    room = relationship("Room")
 
 
 class Embedding(Base):

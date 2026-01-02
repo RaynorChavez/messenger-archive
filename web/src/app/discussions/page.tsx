@@ -149,18 +149,20 @@ export default function DiscussionsPage() {
     }
   }, []);
 
-  const loadTopics = useCallback(async () => {
+  const loadTopics = useCallback(async (roomId?: number) => {
+    if (!roomId) return;
     try {
-      const result = await discussions.listTopics();
+      const result = await discussions.listTopics(roomId);
       setTopics(result.topics);
     } catch (err) {
       console.error("Failed to load topics:", err);
     }
   }, []);
 
-  const loadStatus = useCallback(async () => {
+  const loadStatus = useCallback(async (roomId?: number) => {
+    if (!roomId) return null;
     try {
-      const status = await discussions.analysisStatus();
+      const status = await discussions.analysisStatus(roomId);
       setAnalysisStatus(status);
       return status;
     } catch (err) {
@@ -169,9 +171,10 @@ export default function DiscussionsPage() {
     }
   }, []);
 
-  const loadTopicClassificationStatus = useCallback(async () => {
+  const loadTopicClassificationStatus = useCallback(async (roomId?: number) => {
+    if (!roomId) return null;
     try {
-      const status = await discussions.topicClassificationStatus();
+      const status = await discussions.topicClassificationStatus(roomId);
       setTopicClassificationStatus(status);
       return status;
     } catch (err) {
@@ -180,9 +183,10 @@ export default function DiscussionsPage() {
     }
   }, []);
 
-  const loadAnalysisPreview = useCallback(async () => {
+  const loadAnalysisPreview = useCallback(async (roomId?: number) => {
+    if (!roomId) return null;
     try {
-      const preview = await discussions.analysisPreview();
+      const preview = await discussions.analysisPreview(roomId);
       setAnalysisPreview(preview);
       return preview;
     } catch (err) {
@@ -211,13 +215,17 @@ export default function DiscussionsPage() {
   useEffect(() => {
     async function load() {
       const roomId = currentRoom?.id;
+      if (!roomId) {
+        setLoading(false);
+        return;
+      }
       await Promise.all([
         loadDiscussions(null, null, 1, false, roomId),
         loadTimeline(null, roomId),
-        loadStatus(),
-        loadTopics(),
-        loadTopicClassificationStatus(),
-        loadAnalysisPreview()
+        loadStatus(roomId),
+        loadTopics(roomId),
+        loadTopicClassificationStatus(roomId),
+        loadAnalysisPreview(roomId)
       ]);
       setLoading(false);
     }
@@ -272,17 +280,18 @@ export default function DiscussionsPage() {
   // Poll for status and discussions while analysis is running
   useEffect(() => {
     if (analysisStatus?.status !== "running") return;
+    const roomId = currentRoom?.id;
+    if (!roomId) return;
 
     const interval = setInterval(async () => {
-      const status = await loadStatus();
-      const roomId = currentRoom?.id;
+      const status = await loadStatus(roomId);
       await Promise.all([
         loadDiscussions(selectedTopicId, selectedDate, 1, false, roomId),
         loadTimeline(selectedTopicId, roomId),
       ]);
       // Reload preview when analysis completes
       if (status?.status === "completed") {
-        loadAnalysisPreview();
+        loadAnalysisPreview(roomId);
       }
     }, 2000);
 
@@ -292,12 +301,13 @@ export default function DiscussionsPage() {
   // Poll for topic classification status
   useEffect(() => {
     if (topicClassificationStatus?.status !== "running") return;
+    const roomId = currentRoom?.id;
+    if (!roomId) return;
 
     const interval = setInterval(async () => {
-      const status = await loadTopicClassificationStatus();
+      const status = await loadTopicClassificationStatus(roomId);
       if (status?.status === "completed") {
-        const roomId = currentRoom?.id;
-        await Promise.all([loadTopics(), loadDiscussions(selectedTopicId, selectedDate, 1, false, roomId), loadTimeline(selectedTopicId, roomId)]);
+        await Promise.all([loadTopics(roomId), loadDiscussions(selectedTopicId, selectedDate, 1, false, roomId), loadTimeline(selectedTopicId, roomId)]);
       }
     }, 2000);
 
@@ -305,12 +315,17 @@ export default function DiscussionsPage() {
   }, [topicClassificationStatus?.status, loadTopicClassificationStatus, loadTopics, loadDiscussions, loadTimeline, selectedTopicId, selectedDate, currentRoom?.id]);
 
   const handleStartAnalysis = async (mode: "incremental" | "full" = "incremental") => {
+    const roomId = currentRoom?.id;
+    if (!roomId) {
+      setError("Please select a room first");
+      return;
+    }
     setStartingAnalysis(true);
     setError(null);
     setShowAnalysisMenu(false);
     try {
-      await discussions.analyze(mode);
-      await loadStatus();
+      await discussions.analyze(roomId, mode);
+      await loadStatus(roomId);
     } catch (err) {
       console.error("Failed to start analysis:", err);
       setError(err instanceof Error ? err.message : "Failed to start analysis");
@@ -320,11 +335,16 @@ export default function DiscussionsPage() {
   };
 
   const handleStartClassification = async () => {
+    const roomId = currentRoom?.id;
+    if (!roomId) {
+      setError("Please select a room first");
+      return;
+    }
     setStartingClassification(true);
     setError(null);
     try {
-      await discussions.classifyTopics();
-      await loadTopicClassificationStatus();
+      await discussions.classifyTopics(roomId);
+      await loadTopicClassificationStatus(roomId);
     } catch (err) {
       console.error("Failed to start topic classification:", err);
       setError(err instanceof Error ? err.message : "Failed to start classification");
@@ -396,7 +416,7 @@ export default function DiscussionsPage() {
               <div className="flex">
                 <button
                   onClick={() => handleStartAnalysis(analysisPreview?.incremental_available ? "incremental" : "full")}
-                  disabled={startingAnalysis || isRunning || (analysisPreview?.incremental_available && analysisPreview.new_messages === 0)}
+                  disabled={!currentRoom || startingAnalysis || isRunning || (analysisPreview?.incremental_available && analysisPreview.new_messages === 0)}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-l-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {startingAnalysis || isRunning ? (
@@ -415,7 +435,7 @@ export default function DiscussionsPage() {
                 </button>
                 <button
                   onClick={() => setShowAnalysisMenu(!showAnalysisMenu)}
-                  disabled={startingAnalysis || isRunning}
+                  disabled={!currentRoom || startingAnalysis || isRunning}
                   className="inline-flex items-center px-2 py-2 bg-primary text-primary-foreground rounded-r-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed border-l border-primary-foreground/20"
                 >
                   <ChevronDown className="h-4 w-4" />
@@ -459,7 +479,7 @@ export default function DiscussionsPage() {
             
             <button
               onClick={handleStartClassification}
-              disabled={startingClassification || isClassifying || data.length === 0}
+              disabled={!currentRoom || startingClassification || isClassifying || data.length === 0}
               className="inline-flex items-center gap-2 px-4 py-2 border rounded-lg font-medium hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {startingClassification || isClassifying ? (
