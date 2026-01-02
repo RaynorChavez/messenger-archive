@@ -195,7 +195,13 @@ Messages with context:
                 content = msg["content"]
                 if len(content) > 500:
                     content = content[:500] + "..."
-                lines.append(f"  >>> [{ts_str}] {person_name}: {content}")
+                
+                # Include reply context if present
+                reply_info = msg.get("reply_to")
+                if reply_info:
+                    lines.append(f'  >>> [{ts_str}] {person_name} (replying to {reply_info["sender"]}: "{reply_info["content"]}"): {content}')
+                else:
+                    lines.append(f"  >>> [{ts_str}] {person_name}: {content}")
                 
                 # Context after
                 if msg.get("context_after"):

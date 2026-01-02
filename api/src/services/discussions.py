@@ -23,6 +23,7 @@ from ..schemas.discussion import (
     MessageClassification,
     DiscussionAssignment,
 )
+from ..db import ImageDescription
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class DiscussionAnalyzer:
     WINDOW_SIZE = 300  # Messages per window
     OVERLAP_SIZE = 40  # ~13% overlap
     MAX_MESSAGES_PER_DISCUSSION = 500
-    THINKING_BUDGET = 712
+    THINKING_BUDGET = 20000
     
     PROMPT_TEMPLATE = '''Analyze these messages from "Manila Dialectics Society" to identify discussion threads.
 
@@ -162,16 +163,64 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         self.tools = [types.Tool(function_declarations=[self.inspect_tool])]
     
     def _format_messages_for_prompt(self, messages: List[Any]) -> str:
-        """Format messages as JSON for the prompt."""
+        """Format messages as JSON for the prompt, including reply context and image descriptions."""
+        from ..db import Message
+        
         formatted = []
         for msg in messages:
-            formatted.append({
+            # Get content based on message type
+            content = self._format_message_content(msg)
+            
+            # Build message dict
+            msg_data = {
                 "id": msg.id,
                 "timestamp": msg.timestamp.strftime("%Y-%m-%d %H:%M"),
                 "sender": msg.sender.display_name if msg.sender else "Unknown",
-                "content": msg.content[:500] if msg.content else ""
-            })
+                "content": content[:500] if content else ""
+            }
+            
+            # Add reply context if this is a reply
+            if msg.reply_to_message_id:
+                replied_msg = self.db.query(Message).filter(Message.id == msg.reply_to_message_id).first()
+                if replied_msg:
+                    reply_sender = replied_msg.sender.display_name if replied_msg.sender else "Unknown"
+                    reply_content = (replied_msg.content[:100] + "...") if replied_msg.content and len(replied_msg.content) > 100 else (replied_msg.content or "")
+                    msg_data["replying_to"] = f'{reply_sender}: "{reply_content}"'
+            
+            formatted.append(msg_data)
         return json.dumps(formatted, indent=2)
+    
+    def _format_message_content(self, msg: Any) -> str:
+        """Format message content, handling images and other media types."""
+        message_type = getattr(msg, 'message_type', 'text') or 'text'
+        
+        if message_type == 'image':
+            # Try to get image description
+            if hasattr(msg, 'image_description') and msg.image_description:
+                desc = msg.image_description
+                content = f"[[Image: {desc.description}]]" if desc.description else "[[Image]]"
+                if desc.ocr_text:
+                    content += f" [[Text in image: {desc.ocr_text}]]"
+                return content
+            else:
+                # Check DB for description
+                img_desc = self.db.query(ImageDescription).filter(
+                    ImageDescription.message_id == msg.id
+                ).first()
+                if img_desc and img_desc.description:
+                    content = f"[[Image: {img_desc.description}]]"
+                    if img_desc.ocr_text:
+                        content += f" [[Text in image: {img_desc.ocr_text}]]"
+                    return content
+            return "[[Image]]"
+        elif message_type == 'video':
+            return f"[[Video: {msg.content}]]" if msg.content else "[[Video]]"
+        elif message_type == 'audio':
+            return f"[[Audio: {msg.content}]]" if msg.content else "[[Audio]]"
+        elif message_type == 'file':
+            return f"[[File: {msg.content}]]" if msg.content else "[[File]]"
+        else:
+            return msg.content or ""
     
     def _format_active_discussions(self) -> str:
         """Format active discussions for the prompt, excluding dormant ones."""
@@ -219,12 +268,25 @@ OUTPUT STRICT JSON (no markdown, no extra text):
         
         formatted_messages = []
         for msg in messages:
-            formatted_messages.append({
+            # Get content with image descriptions
+            content = self._format_message_content(msg)
+            
+            msg_data = {
                 "id": msg.id,
                 "sender": msg.sender.display_name if msg.sender else "Unknown",
-                "content": msg.content[:300] if msg.content else "",
+                "content": content[:300] if content else "",
                 "timestamp": msg.timestamp.strftime("%Y-%m-%d %H:%M")
-            })
+            }
+            
+            # Add reply context
+            if msg.reply_to_message_id:
+                replied_msg = self.db.query(Message).filter(Message.id == msg.reply_to_message_id).first()
+                if replied_msg:
+                    reply_sender = replied_msg.sender.display_name if replied_msg.sender else "Unknown"
+                    reply_content = (replied_msg.content[:80] + "...") if replied_msg.content and len(replied_msg.content) > 80 else (replied_msg.content or "")
+                    msg_data["replying_to"] = f'{reply_sender}: "{reply_content}"'
+            
+            formatted_messages.append(msg_data)
         
         return {
             "discussion_id": discussion_id,
@@ -925,12 +987,26 @@ OUTPUT STRICT JSON (no markdown, no extra text):
     
     async def generate_discussion_summary(self, discussion_id: int, title: str, messages: List[Any]) -> str:
         """Generate a summary for a discussion."""
+        from ..db import Message
         
         formatted_messages = []
         for msg in messages[:100]:  # Limit for token efficiency
-            formatted_messages.append(
-                f"[{msg.timestamp.strftime('%Y-%m-%d %H:%M')}] {msg.sender.display_name if msg.sender else 'Unknown'}: {msg.content[:300] if msg.content else ''}"
-            )
+            sender = msg.sender.display_name if msg.sender else 'Unknown'
+            content = self._format_message_content(msg)
+            
+            # Build message line
+            line = f"[{msg.timestamp.strftime('%Y-%m-%d %H:%M')}] {sender}"
+            
+            # Add reply context
+            if msg.reply_to_message_id:
+                replied_msg = self.db.query(Message).filter(Message.id == msg.reply_to_message_id).first()
+                if replied_msg:
+                    reply_sender = replied_msg.sender.display_name if replied_msg.sender else "Unknown"
+                    reply_content = (replied_msg.content[:50] + "...") if replied_msg.content and len(replied_msg.content) > 50 else (replied_msg.content or "")
+                    line += f' (replying to {reply_sender}: "{reply_content}")'
+            
+            line += f": {content[:300] if content else ''}"
+            formatted_messages.append(line)
         
         prompt = f'''Summarize this discussion titled "{title}" from the Manila Dialectics Society philosophy group.
 

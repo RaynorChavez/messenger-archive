@@ -19,7 +19,7 @@ from google.genai import types
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 
-from ..db import Person, Message, VirtualConversation, VirtualParticipant, VirtualMessage
+from ..db import Person, Message, VirtualConversation, VirtualParticipant, VirtualMessage, ImageDescription
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -257,7 +257,7 @@ class PersonaBuilder:
         return "\n\n---\n\n".join(all_sections)
     
     def _format_message_section(
-        self, 
+        self,
         msg: Message, 
         before: List[Message], 
         after: List[Message],
@@ -267,28 +267,72 @@ class PersonaBuilder:
         
         Show the person's message prominently. Context from others
         includes their actual names for better conversation understanding.
+        Includes reply context and image descriptions.
         """
         lines = []
         
         # Context before (show actual names for context)
         if before:
             for m in before:
-                content = self._truncate(m.content, 200)
+                content = self._format_message_content(m, 200)
                 sender_name = m.sender.display_name if m.sender else "Unknown"
-                lines.append(f"[{sender_name}]: {content}")
+                reply_info = self._format_reply_info(m)
+                if reply_info:
+                    lines.append(f"[{sender_name}]{reply_info}: {content}")
+                else:
+                    lines.append(f"[{sender_name}]: {content}")
         
         # The person's message - THIS IS WHAT TO COPY
-        content = self._truncate(msg.content, 500)
-        lines.append(f"[{person_name}]: {content}")
+        content = self._format_message_content(msg, 500)
+        reply_info = self._format_reply_info(msg)
+        if reply_info:
+            lines.append(f"[{person_name}]{reply_info}: {content}")
+        else:
+            lines.append(f"[{person_name}]: {content}")
         
         # Context after (show actual names for context)
         if after:
             for m in after:
-                content = self._truncate(m.content, 200)
+                content = self._format_message_content(m, 200)
                 sender_name = m.sender.display_name if m.sender else "Unknown"
-                lines.append(f"[{sender_name}]: {content}")
+                reply_info = self._format_reply_info(m)
+                if reply_info:
+                    lines.append(f"[{sender_name}]{reply_info}: {content}")
+                else:
+                    lines.append(f"[{sender_name}]: {content}")
         
         return "\n".join(lines)
+    
+    def _format_reply_info(self, msg: Message) -> str:
+        """Format reply information for a message."""
+        if not msg.reply_to:
+            return ""
+        
+        reply_sender = msg.reply_to.sender.display_name if msg.reply_to.sender else "Someone"
+        reply_content = self._truncate(msg.reply_to.content or "", 80)
+        return f' (replying to {reply_sender}: "{reply_content}")'
+    
+    def _format_message_content(self, msg: Message, max_len: int) -> str:
+        """Format message content, handling images and other media types."""
+        message_type = getattr(msg, 'message_type', 'text') or 'text'
+        
+        if message_type == 'image':
+            # Try to get image description
+            if hasattr(msg, 'image_description') and msg.image_description:
+                desc = msg.image_description
+                if desc.description:
+                    result = f"[[Image: {desc.description}]]"
+                    if desc.ocr_text:
+                        result += f" [[Text in image: {desc.ocr_text}]]"
+                    return result
+            # Fallback if no description
+            return f"[[sent an image: {msg.content or 'image'}]]"
+        
+        elif message_type in ('video', 'audio', 'file'):
+            return f"[[sent a {message_type}: {msg.content or message_type}]]"
+        
+        # Regular text message
+        return self._truncate(msg.content, max_len)
     
     def _clean_content(self, text: str) -> str:
         """Clean message content for persona context."""

@@ -42,6 +42,20 @@ class Person(Base):
     ai_chat_password_hash = Column(String(255), nullable=True)
     
     messages = relationship("Message", back_populates="sender")
+    summaries = relationship("PersonSummary", back_populates="person", order_by="desc(PersonSummary.generated_at)")
+
+
+class PersonSummary(Base):
+    """Historical AI-generated summaries for a person."""
+    __tablename__ = "person_summaries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    person_id = Column(Integer, ForeignKey("people.id", ondelete="CASCADE"), nullable=False, index=True)
+    summary = Column(Text, nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    message_count = Column(Integer, default=0)  # Number of messages at time of generation
+    
+    person = relationship("Person", back_populates="summaries")
 
 
 class Room(Base):
@@ -92,10 +106,15 @@ class Message(Base):
     timestamp = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
+    # Media fields for image/file messages
+    message_type = Column(String(20), default="text")  # 'text', 'image', 'file', 'video', 'audio'
+    media_url = Column(String(500), nullable=True)  # mxc:// URL for media
+    
     room = relationship("Room", back_populates="messages")
     sender = relationship("Person", back_populates="messages")
     reply_to = relationship("Message", remote_side=[id], foreign_keys=[reply_to_message_id])
     discussion_links = relationship("DiscussionMessage", back_populates="message")
+    image_description = relationship("ImageDescription", back_populates="message", uselist=False)
 
 
 class DiscussionAnalysisRun(Base):
@@ -208,6 +227,22 @@ class Embedding(Base):
     __table_args__ = (
         UniqueConstraint('entity_type', 'entity_id', name='uq_embedding_entity'),
     )
+
+
+class ImageDescription(Base):
+    """AI-generated descriptions for image messages."""
+    __tablename__ = "image_descriptions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, unique=True)
+    media_id = Column(String(255), nullable=False, unique=True)  # Matrix media ID (from mxc:// URL)
+    description = Column(Text, nullable=True)  # Gemini-generated image description
+    ocr_text = Column(Text, nullable=True)  # Any text detected in the image
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)  # When Gemini processed it
+    error = Column(Text, nullable=True)  # Error message if processing failed
+    
+    message = relationship("Message", back_populates="image_description")
 
 
 # =============================================================================

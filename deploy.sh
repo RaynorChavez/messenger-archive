@@ -724,6 +724,68 @@ run_backup() {
     log_info "Backup complete!"
 }
 
+# Backfill media info from Synapse and process images
+backfill_media() {
+    SERVER_IP=$(get_server_ip)
+    LIMIT="${1:-1000}"
+    
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Could not find server IP. Run './deploy.sh infra' first."
+        exit 1
+    fi
+    
+    log_step "Backfilling media info on $SERVER_IP (limit: $LIMIT)..."
+    
+    # Step 1: Backfill media metadata from Synapse
+    ssh ubuntu@"$SERVER_IP" << ENDSSH
+        set -e
+        cd /opt/messenger-archive
+        
+        echo "=== Step 1: Backfill media metadata from Synapse ==="
+        cat scripts/backfill_media.py | docker exec -i archive-api python - --limit $LIMIT
+        
+        echo ""
+        echo "=== Step 2: Process pending images through Gemini Vision ==="
+        docker exec archive-api python -c "
+from src.db import SessionLocal, ImageDescription
+from src.services.image_description import init_image_description_service, get_image_description_service
+import os
+
+api_key = os.environ.get('GEMINI_API_KEY')
+if not api_key:
+    print('ERROR: No GEMINI_API_KEY found')
+    exit(1)
+
+init_image_description_service(api_key)
+service = get_image_description_service()
+db = SessionLocal()
+
+# Get pending count
+pending = db.query(ImageDescription).filter(
+    ImageDescription.processed_at.is_(None),
+    ImageDescription.error.is_(None)
+).count()
+
+print(f'Processing {pending} pending images...')
+
+processed = service.process_pending_images(db, limit=$LIMIT)
+print(f'Successfully processed {processed} images')
+
+# Show any errors
+errors = db.query(ImageDescription).filter(ImageDescription.error.isnot(None)).count()
+if errors > 0:
+    print(f'Warning: {errors} images failed processing')
+
+db.close()
+"
+        
+        echo ""
+        echo "=== Done ==="
+ENDSSH
+    
+    log_info "Media backfill complete!"
+}
+
 # Show help
 show_help() {
     echo "Messenger Archive Deployment Script"
@@ -744,6 +806,7 @@ show_help() {
     echo "  migrate:rooms   Join archive user to monitored rooms"
     echo "  migrate:env     Setup .env file on server from template"
     echo "  backup          Run a manual backup to S3"
+    echo "  backfill-media  Backfill media info from Synapse and process images (default: 1000)"
     echo "  all             Deploy infra + wait + app"
     echo "  ssh             SSH into the server"
     echo "  logs            Show server logs"
@@ -884,6 +947,9 @@ case "$COMMAND" in
         ;;
     backup)
         run_backup
+        ;;
+    backfill-media)
+        backfill_media "${2:-1000}"
         ;;
     all)
         deploy_infra

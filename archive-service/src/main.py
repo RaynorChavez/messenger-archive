@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from nio import AsyncClient, MatrixRoom, RoomMessageText, Event
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageImage, RoomMessageFile, RoomMessageAudio, RoomMessageVideo, Event
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -196,7 +196,9 @@ async def store_message(
     sender_id: int,
     content: str,
     timestamp: datetime,
-    reply_to_event_id: Optional[str] = None
+    reply_to_event_id: Optional[str] = None,
+    message_type: str = "text",
+    media_url: Optional[str] = None
 ):
     """Store a message in the database."""
     # Check if already exists
@@ -212,8 +214,8 @@ async def store_message(
     
     result = db.execute(
         text("""
-            INSERT INTO messages (matrix_event_id, room_id, sender_id, content, timestamp, reply_to_message_id)
-            VALUES (:event_id, :room_id, :sender_id, :content, :timestamp, :reply_to_id)
+            INSERT INTO messages (matrix_event_id, room_id, sender_id, content, timestamp, reply_to_message_id, message_type, media_url)
+            VALUES (:event_id, :room_id, :sender_id, :content, :timestamp, :reply_to_id, :message_type, :media_url)
             RETURNING id
         """),
         {
@@ -222,7 +224,9 @@ async def store_message(
             "sender_id": sender_id,
             "content": content,
             "timestamp": timestamp,
-            "reply_to_id": reply_to_message_id
+            "reply_to_id": reply_to_message_id,
+            "message_type": message_type,
+            "media_url": media_url
         }
     )
     db.commit()
@@ -297,6 +301,112 @@ class ArchiveClient:
         except Exception as e:
             logger.error(f"Error archiving message: {e}")
     
+    async def media_callback(self, room: MatrixRoom, event):
+        """Handle incoming media messages (images, files, audio, video)."""
+        try:
+            # Filter by room name if configured
+            room_filters = settings.get_room_filters()
+            if room_filters:
+                room_name = (room.display_name or "").lower()
+                if room_name not in room_filters:
+                    return
+            
+            # Determine message type based on event class
+            event_type = type(event).__name__
+            if event_type == "RoomMessageImage":
+                message_type = "image"
+            elif event_type == "RoomMessageVideo":
+                message_type = "video"
+            elif event_type == "RoomMessageAudio":
+                message_type = "audio"
+            else:
+                message_type = "file"
+            
+            # Get media URL
+            media_url = getattr(event, 'url', None)
+            
+            # Get sender's avatar URL
+            avatar_url = None
+            if event.sender in room.users:
+                avatar_url = room.users[event.sender].avatar_url
+            
+            # Get or create sender
+            sender_id = await get_or_create_person(
+                self.db,
+                event.sender,
+                room.user_name(event.sender),
+                avatar_url
+            )
+            
+            # Get or create room
+            room_id = await get_or_create_room(
+                self.db,
+                room.room_id,
+                room.display_name
+            )
+            
+            # Check for reply
+            reply_to_event_id = None
+            if hasattr(event, 'source') and event.source:
+                relates_to = event.source.get('content', {}).get('m.relates_to', {})
+                if relates_to.get('m.in_reply_to'):
+                    reply_to_event_id = relates_to['m.in_reply_to'].get('event_id')
+            
+            # Use body (filename or caption) as content
+            content = getattr(event, 'body', None) or f"[{message_type}]"
+            
+            # Store message
+            timestamp = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
+            message_id = await store_message(
+                self.db,
+                event.event_id,
+                room_id,
+                sender_id,
+                content,
+                timestamp,
+                reply_to_event_id,
+                message_type=message_type,
+                media_url=media_url
+            )
+            
+            logger.info(f"Archived {message_type} from {event.sender} in {room.display_name}")
+            
+            # Queue image for description processing (if it's an image)
+            if message_id and message_type == "image" and media_url:
+                asyncio.create_task(self._queue_image_for_processing(message_id, media_url))
+            
+        except Exception as e:
+            logger.error(f"Error archiving media message: {e}")
+    
+    async def _queue_image_for_processing(self, message_id: int, media_url: str):
+        """Queue an image for AI description processing."""
+        try:
+            # Extract media_id from mxc:// URL
+            # Format: mxc://server/media_id
+            if not media_url or not media_url.startswith("mxc://"):
+                return
+            
+            parts = media_url.replace("mxc://", "").split("/")
+            if len(parts) < 2:
+                return
+            
+            media_id = parts[1]
+            
+            # Create placeholder record in image_descriptions
+            self.db.execute(
+                text("""
+                    INSERT INTO image_descriptions (message_id, media_id)
+                    VALUES (:message_id, :media_id)
+                    ON CONFLICT (message_id) DO NOTHING
+                """),
+                {"message_id": message_id, "media_id": media_id}
+            )
+            self.db.commit()
+            logger.debug(f"Queued image {media_id} for processing")
+            
+        except Exception as e:
+            logger.debug(f"Could not queue image for processing: {e}")
+    
     async def _embed_message(self, message_id: int):
         """Embed a message for semantic search. Non-blocking, logs errors."""
         try:
@@ -330,8 +440,12 @@ class ArchiveClient:
             logger.error(f"Login failed: {response}")
             return
         
-        # Register callback
+        # Register callbacks
         self.client.add_event_callback(self.message_callback, RoomMessageText)
+        self.client.add_event_callback(self.media_callback, RoomMessageImage)
+        self.client.add_event_callback(self.media_callback, RoomMessageVideo)
+        self.client.add_event_callback(self.media_callback, RoomMessageAudio)
+        self.client.add_event_callback(self.media_callback, RoomMessageFile)
         
         # Sync forever
         logger.info("Starting sync loop...")

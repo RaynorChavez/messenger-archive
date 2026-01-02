@@ -21,7 +21,15 @@ from typing import Optional
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nio import AsyncClient, RoomMessagesResponse, RoomMessagesError
+from nio import (
+    AsyncClient,
+    RoomMessagesResponse,
+    RoomMessagesError,
+    RoomMessageImage,
+    RoomMessageVideo,
+    RoomMessageAudio,
+    RoomMessageFile,
+)
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -134,7 +142,9 @@ async def store_message(
     sender_id: int,
     content: str,
     timestamp: datetime,
-    reply_to_event_id: Optional[str] = None
+    reply_to_event_id: Optional[str] = None,
+    message_type: str = "text",
+    media_url: Optional[str] = None
 ) -> Optional[int]:
     """Store a message in the database."""
     # Check if already exists
@@ -148,8 +158,8 @@ async def store_message(
     
     result = db.execute(
         text("""
-            INSERT INTO messages (matrix_event_id, room_id, sender_id, content, timestamp, reply_to_message_id)
-            VALUES (:event_id, :room_id, :sender_id, :content, :timestamp, :reply_to_id)
+            INSERT INTO messages (matrix_event_id, room_id, sender_id, content, timestamp, reply_to_message_id, message_type, media_url)
+            VALUES (:event_id, :room_id, :sender_id, :content, :timestamp, :reply_to_id, :message_type, :media_url)
             ON CONFLICT (matrix_event_id) DO NOTHING
             RETURNING id
         """),
@@ -159,12 +169,38 @@ async def store_message(
             "sender_id": sender_id,
             "content": content,
             "timestamp": timestamp,
-            "reply_to_id": reply_to_message_id
+            "reply_to_id": reply_to_message_id,
+            "message_type": message_type,
+            "media_url": media_url
         }
     )
     db.commit()
     row = result.fetchone()
     return row[0] if row else None
+
+
+async def queue_image_for_processing(db, message_id: int, media_url: str):
+    """Queue an image for later processing by creating an image_descriptions record."""
+    # Extract media_id from mxc:// URL
+    # Format: mxc://server/media_id
+    if not media_url or not media_url.startswith("mxc://"):
+        return
+    
+    parts = media_url.split("/")
+    if len(parts) < 4:
+        return
+    
+    media_id = parts[-1]
+    
+    db.execute(
+        text("""
+            INSERT INTO image_descriptions (message_id, media_id)
+            VALUES (:message_id, :media_id)
+            ON CONFLICT (media_id) DO NOTHING
+        """),
+        {"message_id": message_id, "media_id": media_id}
+    )
+    db.commit()
 
 
 async def backfill_room(client: AsyncClient, db, room_id: str, room_name: str, limit: int = 10000):
@@ -201,8 +237,33 @@ async def backfill_room(client: AsyncClient, db, room_id: str, room_name: str, l
             break
         
         for event in response.chunk:
-            # Only process text messages
-            if event.__class__.__name__ != "RoomMessageText":
+            # Determine message type and content
+            event_class = event.__class__.__name__
+            message_type = "text"
+            content = ""
+            media_url = None
+            
+            if event_class == "RoomMessageText":
+                message_type = "text"
+                content = event.body
+            elif event_class == "RoomMessageImage":
+                message_type = "image"
+                content = getattr(event, 'body', '[Image]')
+                media_url = getattr(event, 'url', None)
+            elif event_class == "RoomMessageVideo":
+                message_type = "video"
+                content = getattr(event, 'body', '[Video]')
+                media_url = getattr(event, 'url', None)
+            elif event_class == "RoomMessageAudio":
+                message_type = "audio"
+                content = getattr(event, 'body', '[Audio]')
+                media_url = getattr(event, 'url', None)
+            elif event_class == "RoomMessageFile":
+                message_type = "file"
+                content = getattr(event, 'body', '[File]')
+                media_url = getattr(event, 'url', None)
+            else:
+                # Skip other event types (state events, reactions, etc.)
                 continue
             
             # Get sender info
@@ -232,13 +293,18 @@ async def backfill_room(client: AsyncClient, db, room_id: str, room_name: str, l
                 event.event_id,
                 db_room_id,
                 sender_id,
-                event.body,
+                content,
                 timestamp,
-                reply_to_event_id
+                reply_to_event_id,
+                message_type,
+                media_url
             )
             
             if msg_id:
                 messages_added += 1
+                # Queue image for processing
+                if message_type == "image" and media_url:
+                    await queue_image_for_processing(db, msg_id, media_url)
             else:
                 messages_skipped += 1
         

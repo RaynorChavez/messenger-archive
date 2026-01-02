@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from pydantic import BaseModel
@@ -6,8 +7,9 @@ from typing import Optional
 from datetime import datetime
 import httpx
 
-from ..db import get_db, Message
+from ..db import get_db, Message, ImageDescription
 from ..auth import get_current_session
+from ..services.image_description import get_image_description_service
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -84,4 +86,68 @@ async def get_settings_status(
             database_size_mb=db_size_mb,
             oldest_message=oldest
         )
+    )
+
+
+class ImageProcessingResponse(BaseModel):
+    """Response for image processing endpoint."""
+    processed: int
+    pending: int
+    errors: int
+
+
+@router.post("/images/process", response_model=ImageProcessingResponse)
+async def process_pending_images(
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Process pending images through Gemini Vision to generate descriptions."""
+    service = get_image_description_service()
+    if not service:
+        raise HTTPException(status_code=503, detail="Image description service not initialized")
+    
+    # Process images in thread pool to avoid blocking
+    processed = await run_in_threadpool(service.process_pending_images, db, limit)
+    
+    # Get counts for response
+    pending = db.query(func.count(ImageDescription.id)).filter(
+        ImageDescription.processed_at.is_(None),
+        ImageDescription.error.is_(None)
+    ).scalar() or 0
+    
+    errors = db.query(func.count(ImageDescription.id)).filter(
+        ImageDescription.error.isnot(None)
+    ).scalar() or 0
+    
+    return ImageProcessingResponse(
+        processed=processed,
+        pending=pending,
+        errors=errors
+    )
+
+
+@router.get("/images/status", response_model=ImageProcessingResponse)
+async def get_image_processing_status(
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get current image processing status."""
+    total = db.query(func.count(ImageDescription.id)).scalar() or 0
+    
+    pending = db.query(func.count(ImageDescription.id)).filter(
+        ImageDescription.processed_at.is_(None),
+        ImageDescription.error.is_(None)
+    ).scalar() or 0
+    
+    errors = db.query(func.count(ImageDescription.id)).filter(
+        ImageDescription.error.isnot(None)
+    ).scalar() or 0
+    
+    processed = total - pending - errors
+    
+    return ImageProcessingResponse(
+        processed=processed,
+        pending=pending,
+        errors=errors
     )

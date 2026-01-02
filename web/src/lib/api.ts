@@ -200,6 +200,19 @@ export interface PeopleListResponse {
   total: number;
 }
 
+export interface SummaryVersion {
+  id: number;
+  summary: string;
+  generated_at: string;
+  message_count: number;
+}
+
+export interface SummaryVersionsResponse {
+  versions: SummaryVersion[];
+  total: number;
+  current_index: number;
+}
+
 export const people = {
   list: (search?: string, room_id?: number) =>
     fetchAPI<PeopleListResponse>("/people", { params: { search, room_id } }),
@@ -296,6 +309,13 @@ export const people = {
       method: "POST",
       body: JSON.stringify({ password }),
     }),
+
+  // Summary versions (history)
+  summaryVersions: (id: number) =>
+    fetchAPI<SummaryVersionsResponse>(`/people/${id}/summary-versions`),
+
+  summaryVersion: (personId: number, versionId: number) =>
+    fetchAPI<SummaryVersion>(`/people/${personId}/summary-versions/${versionId}`),
 };
 
 // Threads

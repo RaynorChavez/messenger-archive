@@ -22,6 +22,7 @@ from .routers import (
 from .services.ai import init_ai_service
 from .services.embeddings import init_embedding_service
 from .services.virtual_chat import init_virtual_chat_service
+from .services.image_description import init_image_description_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ async def lifespan(app: FastAPI):
         )
         init_embedding_service(api_key=settings.gemini_api_key)
         init_virtual_chat_service(api_key=settings.gemini_api_key)
-        logger.info("AI, Embedding, and Virtual Chat services initialized")
+        init_image_description_service(api_key=settings.gemini_api_key)
+        logger.info("AI, Embedding, Virtual Chat, and Image Description services initialized")
     else:
         logger.warning("GEMINI_API_KEY not set - AI features disabled")
     

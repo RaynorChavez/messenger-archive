@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
-import { people, type PersonFull, type Message, type PersonActivityResponse, type PersonRoomStats, mxcToHttp } from "@/lib/api";
+import { people, type PersonFull, type Message, type PersonActivityResponse, type PersonRoomStats, type SummaryVersion, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle, Hash, Shield, ShieldOff } from "lucide-react";
+import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle, Hash, Shield, ShieldOff, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { virtualChat } from "@/lib/api";
 import {
@@ -32,6 +32,11 @@ export default function PersonDetailPage() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [startingChat, setStartingChat] = useState(false);
   
+  // Summary version navigation
+  const [summaryVersions, setSummaryVersions] = useState<SummaryVersion[]>([]);
+  const [currentVersionIndex, setCurrentVersionIndex] = useState(0);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  
   // Activity chart state
   const [activity, setActivity] = useState<PersonActivityResponse | null>(null);
   const [activityPeriod, setActivityPeriod] = useState<"month" | "3months" | "6months" | "year" | "all">("6months");
@@ -49,15 +54,30 @@ export default function PersonDetailPage() {
   const [aiChatError, setAiChatError] = useState<string | null>(null);
   const [aiChatLoading, setAiChatLoading] = useState(false);
 
+  // Load summary versions
+  const loadSummaryVersions = async () => {
+    try {
+      setLoadingVersions(true);
+      const response = await people.summaryVersions(personId);
+      setSummaryVersions(response.versions);
+      setCurrentVersionIndex(0); // Latest is always first
+    } catch (error) {
+      console.error("Failed to load summary versions:", error);
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
   useEffect(() => {
     async function load() {
       try {
-        const [personData, messagesData, activityData, roomsData, aiChatStatus] = await Promise.all([
+        const [personData, messagesData, activityData, roomsData, aiChatStatus, versionsData] = await Promise.all([
           people.get(personId),
           people.messages(personId),
           people.activity(personId, activityPeriod, activityGranularity),
           people.rooms(personId),
           people.aiChatStatus(personId),
+          people.summaryVersions(personId).catch(() => ({ versions: [], total: 0, current_index: 0 })),
         ]);
         setPerson(personData);
         setNotes(personData.notes || "");
@@ -66,6 +86,8 @@ export default function PersonDetailPage() {
         setRoomStats(roomsData.rooms);
         setAiChatEnabled(aiChatStatus.enabled);
         setAiChatHasPassword(aiChatStatus.has_password);
+        setSummaryVersions(versionsData.versions);
+        setCurrentVersionIndex(0);
       } catch (error) {
         console.error("Failed to load person:", error);
       } finally {
@@ -104,9 +126,14 @@ export default function PersonDetailPage() {
       try {
         const status = await people.summaryStatus(personId);
         if (status.status === "completed") {
-          // Reload person data to get new summary
-          const updatedPerson = await people.get(personId);
+          // Reload person data and summary versions
+          const [updatedPerson, versionsData] = await Promise.all([
+            people.get(personId),
+            people.summaryVersions(personId),
+          ]);
           setPerson(updatedPerson);
+          setSummaryVersions(versionsData.versions);
+          setCurrentVersionIndex(0); // Show latest
           setGeneratingSummary(false);
         } else if (status.status === "failed") {
           setSummaryError(status.error || "Failed to generate summary");
@@ -288,11 +315,38 @@ export default function PersonDetailPage() {
               {/* AI Summary */}
               <div className="mt-4 rounded-lg border p-4 bg-muted/50">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">AI Summary</span>
                   <div className="flex items-center gap-2">
-                    {person.ai_summary_generated_at && (
+                    <span className="text-sm font-medium">AI Summary</span>
+                    {/* Version navigation */}
+                    {summaryVersions.length > 1 && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <button
+                          onClick={() => setCurrentVersionIndex(Math.min(currentVersionIndex + 1, summaryVersions.length - 1))}
+                          disabled={currentVersionIndex >= summaryVersions.length - 1}
+                          className="p-0.5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Older version"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <span className="min-w-[3ch] text-center">
+                          {summaryVersions.length - currentVersionIndex}/{summaryVersions.length}
+                        </span>
+                        <button
+                          onClick={() => setCurrentVersionIndex(Math.max(currentVersionIndex - 1, 0))}
+                          disabled={currentVersionIndex <= 0}
+                          className="p-0.5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Newer version"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {summaryVersions[currentVersionIndex]?.generated_at && (
                       <span className="text-xs text-muted-foreground">
-                        Generated {formatRelativeTime(person.ai_summary_generated_at)}
+                        Generated {formatRelativeTime(summaryVersions[currentVersionIndex].generated_at)}
+                        {currentVersionIndex > 0 && " (older)"}
                       </span>
                     )}
                     <button
@@ -322,6 +376,21 @@ export default function PersonDetailPage() {
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Analyzing {person.message_count.toLocaleString()} messages...
                   </div>
+                ) : summaryVersions.length > 0 ? (
+                  <>
+                    <p className="text-sm whitespace-pre-wrap">{summaryVersions[currentVersionIndex]?.summary}</p>
+                    {currentVersionIndex === 0 && person.ai_summary_stale && (
+                      <p className="text-xs text-amber-500 mt-2 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        30+ new messages since last summary - click to regenerate
+                      </p>
+                    )}
+                    {summaryVersions[currentVersionIndex]?.message_count > 0 && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Based on {summaryVersions[currentVersionIndex].message_count.toLocaleString()} messages
+                      </p>
+                    )}
+                  </>
                 ) : person.ai_summary ? (
                   <>
                     <p className="text-sm whitespace-pre-wrap">{person.ai_summary}</p>

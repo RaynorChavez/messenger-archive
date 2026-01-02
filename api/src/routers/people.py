@@ -9,7 +9,7 @@ import logging
 import threading
 import bcrypt
 
-from ..db import get_db, Person, Message, Room, RoomMember, SessionLocal
+from ..db import get_db, Person, Message, Room, RoomMember, SessionLocal, PersonSummary
 from ..auth import get_current_session
 from ..schemas.person import PersonResponse, PersonListResponse, PersonUpdate
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
@@ -393,6 +393,78 @@ async def get_summary_status(
     }
 
 
+class SummaryVersionResponse(BaseModel):
+    """Response for a single summary version."""
+    id: int
+    summary: str
+    generated_at: datetime
+    message_count: int
+
+
+class SummaryVersionsResponse(BaseModel):
+    """Response for summary versions endpoint."""
+    versions: list[SummaryVersionResponse]
+    total: int
+    current_index: int  # Index of the current/latest version (0-based)
+
+
+@router.get("/{person_id}/summary-versions", response_model=SummaryVersionsResponse)
+async def get_summary_versions(
+    person_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get all historical summary versions for a person."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    # Get all summaries ordered by most recent first
+    summaries = db.query(PersonSummary).filter(
+        PersonSummary.person_id == person_id
+    ).order_by(desc(PersonSummary.generated_at)).all()
+    
+    versions = [
+        SummaryVersionResponse(
+            id=s.id,
+            summary=s.summary,
+            generated_at=s.generated_at,
+            message_count=s.message_count or 0
+        )
+        for s in summaries
+    ]
+    
+    return SummaryVersionsResponse(
+        versions=versions,
+        total=len(versions),
+        current_index=0  # Latest is always at index 0
+    )
+
+
+@router.get("/{person_id}/summary-versions/{version_id}", response_model=SummaryVersionResponse)
+async def get_summary_version(
+    person_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get a specific summary version by ID."""
+    summary = db.query(PersonSummary).filter(
+        PersonSummary.id == version_id,
+        PersonSummary.person_id == person_id
+    ).first()
+    
+    if not summary:
+        raise HTTPException(status_code=404, detail="Summary version not found")
+    
+    return SummaryVersionResponse(
+        id=summary.id,
+        summary=summary.summary,
+        generated_at=summary.generated_at,
+        message_count=summary.message_count or 0
+    )
+
+
 def _get_context_messages_in_room(db: Session, room_id: int, message_timestamp: datetime, count: int = 5, direction: str = "before"):
     """Get context messages before or after a given message, within the same room."""
     if direction == "before":
@@ -433,9 +505,17 @@ def _run_summary_generation(person_id: int, person_name: str, database_url: str,
     try:
         logger.info(f"Starting background summary generation for person {person_id} ({person_name})")
         
-        # Fetch messages with room info
+        # Fetch messages with room info, including reply and media info
         messages = (
-            db.query(Message.id, Message.timestamp, Message.content, Message.room_id, Room.name.label("room_name"))
+            db.query(
+                Message.id, 
+                Message.timestamp, 
+                Message.content, 
+                Message.room_id, 
+                Room.name.label("room_name"),
+                Message.message_type,
+                Message.reply_to_message_id
+            )
             .outerjoin(Room, Message.room_id == Room.id)
             .filter(Message.sender_id == person_id)
             .filter(Message.content.isnot(None))
@@ -456,14 +536,47 @@ def _run_summary_generation(person_id: int, person_name: str, database_url: str,
             room_name = msg.room_name or "Unknown Room"
             short_room_name = room_name.replace(" - Manila Dialectics Society", "")
             
+            # Format content based on message type
+            content = msg.content
+            message_type = getattr(msg, 'message_type', 'text') or 'text'
+            
+            if message_type == 'image':
+                # Try to get image description
+                from ..db import ImageDescription
+                img_desc = db.query(ImageDescription).filter(
+                    ImageDescription.message_id == msg.id
+                ).first()
+                if img_desc and img_desc.description:
+                    content = f"[[Image: {img_desc.description}]]"
+                    if img_desc.ocr_text:
+                        content += f" [[Text in image: {img_desc.ocr_text}]]"
+                else:
+                    content = f"[[sent an image: {msg.content or 'image'}]]"
+            elif message_type in ('video', 'audio', 'file'):
+                content = f"[[sent a {message_type}: {msg.content or message_type}]]"
+            
+            # Get reply info if this is a reply
+            reply_info = None
+            if hasattr(msg, 'reply_to_message_id') and msg.reply_to_message_id:
+                reply_msg = db.query(Message.content, Person.display_name).join(
+                    Person, Message.sender_id == Person.id, isouter=True
+                ).filter(Message.id == msg.reply_to_message_id).first()
+                if reply_msg:
+                    reply_sender = reply_msg.display_name or "Someone"
+                    reply_content = (reply_msg.content or "")[:80]
+                    if len(reply_msg.content or "") > 80:
+                        reply_content += "..."
+                    reply_info = {"sender": reply_sender, "content": reply_content}
+            
             messages_with_context.append({
                 "timestamp": msg.timestamp,
-                "content": msg.content,
+                "content": content,
                 "sender_name": person_name or "Unknown",
                 "room_name": short_room_name,
                 "is_target": True,
                 "context_before": context_before,
                 "context_after": context_after,
+                "reply_to": reply_info,
             })
         
         # Create AI service and generate summary
@@ -488,6 +601,15 @@ def _run_summary_generation(person_id: int, person_name: str, database_url: str,
             person.ai_summary = summary
             person.ai_summary_generated_at = datetime.utcnow()
             person.ai_summary_message_count = len(messages)
+            
+            # Also save to summary history table
+            summary_record = PersonSummary(
+                person_id=person_id,
+                summary=summary,
+                generated_at=datetime.utcnow(),
+                message_count=len(messages)
+            )
+            db.add(summary_record)
             db.commit()
             
             # Invalidate persona cache
