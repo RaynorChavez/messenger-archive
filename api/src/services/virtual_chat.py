@@ -684,7 +684,7 @@ class VirtualChatService:
             if current_parts and current_role:
                 contents.append(types.Content(
                     role=current_role,
-                    parts=[types.Part.from_text("\n".join(current_parts))]
+                    parts=[types.Part.from_text(text="\n".join(current_parts))]
                 ))
             current_parts = []
             current_role = None
@@ -717,7 +717,7 @@ class VirtualChatService:
         # Add the current user message
         contents.append(types.Content(
             role="user",
-            parts=[types.Part.from_text(f"User: {current_user_message}\n\nRespond as {persona_name}:")]
+            parts=[types.Part.from_text(text=f"User: {current_user_message}\n\nRespond as {persona_name}:")]
         ))
         
         return contents
