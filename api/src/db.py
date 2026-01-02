@@ -289,6 +289,13 @@ class VirtualMessage(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
+    # Token usage metadata (for agent messages)
+    prompt_tokens = Column(Integer, nullable=True)
+    response_tokens = Column(Integer, nullable=True)
+    thinking_tokens = Column(Integer, nullable=True)
+    cached_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    
     conversation = relationship("VirtualConversation", back_populates="messages")
     person = relationship("Person")
 

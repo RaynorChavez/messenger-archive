@@ -526,10 +526,33 @@ class VirtualChatService:
                                 ),
                             )
                         )
+                        last_chunk = None
                         for chunk in response:
+                            last_chunk = chunk
                             if chunk.text:
                                 chunk_queue.put(("chunk", chunk.text))
-                        chunk_queue.put(("done", None))
+                        
+                        # Extract usage metadata from the final chunk
+                        usage_data = None
+                        if last_chunk and hasattr(last_chunk, 'usage_metadata') and last_chunk.usage_metadata:
+                            um = last_chunk.usage_metadata
+                            usage_data = {
+                                "prompt_tokens": um.prompt_token_count,
+                                "response_tokens": um.candidates_token_count,
+                                "thinking_tokens": um.thoughts_token_count,
+                                "cached_tokens": um.cached_content_token_count,
+                                "total_tokens": um.total_token_count,
+                            }
+                            logger.info(
+                                f"Gemini usage for {display_name}: "
+                                f"prompt={um.prompt_token_count}, "
+                                f"response={um.candidates_token_count}, "
+                                f"thinking={um.thoughts_token_count}, "
+                                f"cached={um.cached_content_token_count}, "
+                                f"total={um.total_token_count}"
+                            )
+                        
+                        chunk_queue.put(("done", usage_data))
                     except Exception as e:
                         chunk_queue.put(("error", str(e)))
                 
@@ -538,6 +561,7 @@ class VirtualChatService:
                 thread.start()
                 
                 # Yield chunks as they arrive (non-blocking)
+                usage_data = None
                 try:
                     while True:
                         # Use asyncio-friendly polling
@@ -547,6 +571,7 @@ class VirtualChatService:
                         msg_type, data = chunk_queue.get_nowait()
                         
                         if msg_type == "done":
+                            usage_data = data  # Contains usage metadata dict
                             break
                         elif msg_type == "error":
                             logger.error(f"Error generating response for {display_name}: {data}")
@@ -568,12 +593,17 @@ class VirtualChatService:
                 message_id = None
                 
                 if response_text and response_text != "[NO RESPONSE]":
-                    # Save agent message
+                    # Save agent message with usage metadata
                     agent_msg = VirtualMessage(
                         conversation_id=conversation_id,
                         sender_type="agent",
                         person_id=person.id,
-                        content=response_text
+                        content=response_text,
+                        prompt_tokens=usage_data.get("prompt_tokens") if usage_data else None,
+                        response_tokens=usage_data.get("response_tokens") if usage_data else None,
+                        thinking_tokens=usage_data.get("thinking_tokens") if usage_data else None,
+                        cached_tokens=usage_data.get("cached_tokens") if usage_data else None,
+                        total_tokens=usage_data.get("total_tokens") if usage_data else None,
                     )
                     db.add(agent_msg)
                     db.commit()
