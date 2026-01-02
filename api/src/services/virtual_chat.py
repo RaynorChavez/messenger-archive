@@ -500,6 +500,9 @@ class VirtualChatService:
                 # Build the user prompt (conversation context)
                 user_prompt = f"## Current Conversation\n{history_text}\n\nUser: {content}\n\nRespond as {display_name}:"
                 
+                # Debug log the prompt
+                logger.info(f"Prompt for {display_name} ({len(history)-1} history messages):\n{user_prompt[:500]}...")
+                
                 # Stream response from Gemini with system instruction
                 # Run in thread to avoid blocking the event loop
                 response_text = ""
