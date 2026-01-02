@@ -44,13 +44,14 @@ Be concise and factual. Focus on the main content of the image."""
 def get_media_path(media_id: str) -> Path:
     """Get the filesystem path for a media file based on Synapse's storage scheme.
     
-    Synapse stores files at: local_content/{first2_lowercase}/{next2_lowercase}/{rest}
+    Synapse stores files at: local_content/{first2}/{next2}/{rest}
+    Note: Directory names preserve original case from media_id.
     """
     if len(media_id) < 4:
         return None
     
-    dir1 = media_id[:2].lower()
-    dir2 = media_id[2:4].lower()
+    dir1 = media_id[:2]
+    dir2 = media_id[2:4]
     filename = media_id[4:]
     
     return Path(MEDIA_STORE_PATH) / "local_content" / dir1 / dir2 / filename
