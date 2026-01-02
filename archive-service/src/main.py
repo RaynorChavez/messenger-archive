@@ -189,6 +189,22 @@ async def get_message_id_by_event(db, matrix_event_id: str) -> Optional[int]:
     return result[0] if result else None
 
 
+async def update_room_member(db, room_id: int, person_id: int, timestamp: datetime):
+    """Update room_members stats when a new message is stored."""
+    db.execute(
+        text("""
+            INSERT INTO room_members (room_id, person_id, first_seen_at, last_seen_at, message_count)
+            VALUES (:room_id, :person_id, :timestamp, :timestamp, 1)
+            ON CONFLICT (room_id, person_id) DO UPDATE SET
+                first_seen_at = LEAST(room_members.first_seen_at, :timestamp),
+                last_seen_at = GREATEST(room_members.last_seen_at, :timestamp),
+                message_count = room_members.message_count + 1
+        """),
+        {"room_id": room_id, "person_id": person_id, "timestamp": timestamp}
+    )
+    db.commit()
+
+
 async def store_message(
     db,
     matrix_event_id: str,
@@ -230,6 +246,10 @@ async def store_message(
         }
     )
     db.commit()
+    
+    # Update room_members stats for this new message
+    await update_room_member(db, room_id, sender_id, timestamp)
+    
     return result.fetchone()[0]
 
 
