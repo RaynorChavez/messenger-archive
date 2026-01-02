@@ -329,6 +329,12 @@ class VirtualChatService:
             missing = set(participant_ids) - found_ids
             raise ValueError(f"People not found: {missing}")
         
+        # Check for opted-out personas
+        opted_out = [p for p in people if not p.ai_chat_enabled]
+        if opted_out:
+            names = [p.display_name or f"Person {p.id}" for p in opted_out]
+            raise ValueError(f"AI chat disabled for: {', '.join(names)}")
+        
         # Create conversation
         conversation = VirtualConversation()
         db.add(conversation)
@@ -356,6 +362,13 @@ class VirtualChatService:
     
     def add_participant(self, db: Session, conversation_id: int, person_id: int) -> VirtualParticipant:
         """Add a participant to an existing conversation."""
+        # Check if person exists and is not opted out
+        person = db.query(Person).filter(Person.id == person_id).first()
+        if not person:
+            raise ValueError(f"Person {person_id} not found")
+        if not person.ai_chat_enabled:
+            raise ValueError(f"AI chat disabled for {person.display_name or f'Person {person_id}'}")
+        
         # Check if already a participant
         existing = db.query(VirtualParticipant).filter(
             VirtualParticipant.conversation_id == conversation_id,

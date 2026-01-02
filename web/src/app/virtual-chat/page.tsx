@@ -204,10 +204,11 @@ function VirtualChatContent() {
       p.display_name?.toLowerCase().includes(mentionQuery)
   );
   
-  // Filter people for selector
+  // Filter people for selector (exclude opted-out personas)
   const filteredPeople = allPeople
     .filter(
       (p) =>
+        p.ai_chat_enabled &&  // Only show people who haven't opted out
         !selectedPeople.some((sp) => sp.id === p.id) &&
         (searchQuery === "" ||
           p.display_name?.toLowerCase().includes(searchQuery.toLowerCase()))

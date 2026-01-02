@@ -161,6 +161,8 @@ export interface PersonFull {
   ai_summary: string | null;
   ai_summary_generated_at: string | null;
   ai_summary_stale: boolean;
+  // AI Chat opt-out
+  ai_chat_enabled: boolean;
 }
 
 export interface GenerateSummaryError {
@@ -265,6 +267,34 @@ export const people = {
   ) =>
     fetchAPI<PersonActivityResponse>(`/people/${id}/activity`, {
       params: { period, granularity },
+    }),
+
+  // AI Chat opt-out
+  aiChatStatus: (id: number) =>
+    fetchAPI<{
+      person_id: number;
+      enabled: boolean;
+      has_password: boolean;
+    }>(`/people/${id}/ai-chat/status`),
+
+  disableAIChat: (id: number, password: string) =>
+    fetchAPI<{
+      message: string;
+      person_id: number;
+      enabled: boolean;
+    }>(`/people/${id}/ai-chat/disable`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+
+  enableAIChat: (id: number, password: string) =>
+    fetchAPI<{
+      message: string;
+      person_id: number;
+      enabled: boolean;
+    }>(`/people/${id}/ai-chat/enable`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
     }),
 };
 

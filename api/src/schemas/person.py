@@ -20,6 +20,9 @@ class PersonResponse(BaseModel):
     ai_summary_generated_at: Optional[datetime] = None
     ai_summary_stale: bool = False  # True if 30+ new messages since last summary
     
+    # AI Chat opt-out
+    ai_chat_enabled: bool = True
+    
     class Config:
         from_attributes = True
 

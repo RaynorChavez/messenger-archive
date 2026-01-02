@@ -37,6 +37,10 @@ class Person(Base):
     ai_summary_generated_at = Column(DateTime(timezone=True), nullable=True)
     ai_summary_message_count = Column(Integer, default=0)
     
+    # AI Chat opt-out fields
+    ai_chat_enabled = Column(Boolean, default=True, nullable=False)
+    ai_chat_password_hash = Column(String(255), nullable=True)
+    
     messages = relationship("Message", back_populates="sender")
 
 

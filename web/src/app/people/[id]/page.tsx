@@ -6,7 +6,7 @@ import Link from "next/link";
 import { AppLayout } from "@/components/layout/app-layout";
 import { people, type PersonFull, type Message, type PersonActivityResponse, type PersonRoomStats, mxcToHttp } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle, Hash } from "lucide-react";
+import { ArrowLeft, Edit2, RefreshCw, Loader2, AlertCircle, MessageCircle, Hash, Shield, ShieldOff } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { virtualChat } from "@/lib/api";
 import {
@@ -39,21 +39,33 @@ export default function PersonDetailPage() {
   
   // Room breakdown state
   const [roomStats, setRoomStats] = useState<PersonRoomStats[]>([]);
+  
+  // AI Chat opt-out state
+  const [aiChatEnabled, setAiChatEnabled] = useState<boolean>(true);
+  const [aiChatHasPassword, setAiChatHasPassword] = useState<boolean>(false);
+  const [showAiChatModal, setShowAiChatModal] = useState<"disable" | "enable" | null>(null);
+  const [aiChatPassword, setAiChatPassword] = useState("");
+  const [aiChatConfirmPassword, setAiChatConfirmPassword] = useState("");
+  const [aiChatError, setAiChatError] = useState<string | null>(null);
+  const [aiChatLoading, setAiChatLoading] = useState(false);
 
   useEffect(() => {
     async function load() {
       try {
-        const [personData, messagesData, activityData, roomsData] = await Promise.all([
+        const [personData, messagesData, activityData, roomsData, aiChatStatus] = await Promise.all([
           people.get(personId),
           people.messages(personId),
           people.activity(personId, activityPeriod, activityGranularity),
           people.rooms(personId),
+          people.aiChatStatus(personId),
         ]);
         setPerson(personData);
         setNotes(personData.notes || "");
         setMessages(messagesData.messages);
         setActivity(activityData);
         setRoomStats(roomsData.rooms);
+        setAiChatEnabled(aiChatStatus.enabled);
+        setAiChatHasPassword(aiChatStatus.has_password);
       } catch (error) {
         console.error("Failed to load person:", error);
       } finally {
@@ -126,6 +138,58 @@ export default function PersonDetailPage() {
     }
   };
 
+  const handleDisableAiChat = async () => {
+    if (aiChatPassword !== aiChatConfirmPassword) {
+      setAiChatError("Passwords don't match");
+      return;
+    }
+    if (aiChatPassword.length < 4) {
+      setAiChatError("Password must be at least 4 characters");
+      return;
+    }
+    
+    setAiChatLoading(true);
+    setAiChatError(null);
+    try {
+      await people.disableAIChat(personId, aiChatPassword);
+      setAiChatEnabled(false);
+      setAiChatHasPassword(true);
+      setShowAiChatModal(null);
+      setAiChatPassword("");
+      setAiChatConfirmPassword("");
+    } catch (error) {
+      setAiChatError(error instanceof Error ? error.message : "Failed to disable AI chat");
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
+
+  const handleEnableAiChat = async () => {
+    if (!aiChatPassword) {
+      setAiChatError("Password is required");
+      return;
+    }
+    
+    setAiChatLoading(true);
+    setAiChatError(null);
+    try {
+      await people.enableAIChat(personId, aiChatPassword);
+      setAiChatEnabled(true);
+      setAiChatHasPassword(false);
+      setShowAiChatModal(null);
+      setAiChatPassword("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to enable AI chat";
+      if (message.includes("403")) {
+        setAiChatError("Incorrect password");
+      } else {
+        setAiChatError(message);
+      }
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <AppLayout>
@@ -195,13 +259,23 @@ export default function PersonDetailPage() {
               {/* Virtual Chat Button */}
               <button
                 onClick={handleStartChat}
-                disabled={startingChat}
-                className="mt-3 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={startingChat || !aiChatEnabled}
+                title={!aiChatEnabled ? "This persona has opted out of AI virtual chat" : undefined}
+                className={`mt-3 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
+                  aiChatEnabled 
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90" 
+                    : "bg-muted text-muted-foreground"
+                }`}
               >
                 {startingChat ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Starting chat...
+                  </>
+                ) : !aiChatEnabled ? (
+                  <>
+                    <ShieldOff className="h-4 w-4" />
+                    Virtual Chat Disabled
                   </>
                 ) : (
                   <>
@@ -306,9 +380,124 @@ export default function PersonDetailPage() {
                   </p>
                 )}
               </div>
+
+              {/* AI Chat Opt-Out */}
+              <div className="mt-4 rounded-lg border p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {aiChatEnabled ? (
+                      <Shield className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <ShieldOff className="h-4 w-4 text-red-500" />
+                    )}
+                    <span className="text-sm font-medium">AI Virtual Chat</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setAiChatError(null);
+                      setAiChatPassword("");
+                      setAiChatConfirmPassword("");
+                      setShowAiChatModal(aiChatEnabled ? "disable" : "enable");
+                    }}
+                    className={`text-xs px-3 py-1 rounded ${
+                      aiChatEnabled 
+                        ? "bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400" 
+                        : "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400"
+                    }`}
+                  >
+                    {aiChatEnabled ? "Disable" : "Enable"}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  {aiChatEnabled 
+                    ? "This persona is available for AI virtual chat. Disable to opt-out."
+                    : "This persona has opted out of AI virtual chat."}
+                </p>
+              </div>
             </div>
           </div>
         </div>
+
+        {/* AI Chat Modal */}
+        {showAiChatModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-card border rounded-xl p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold mb-4">
+                {showAiChatModal === "disable" ? "Disable AI Virtual Chat" : "Enable AI Virtual Chat"}
+              </h3>
+              
+              {showAiChatModal === "disable" ? (
+                <>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Set a password to disable this persona from AI virtual chat. Only someone with this password can re-enable it.
+                  </p>
+                  <div className="space-y-3">
+                    <input
+                      type="password"
+                      placeholder="Password"
+                      value={aiChatPassword}
+                      onChange={(e) => setAiChatPassword(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-background border rounded-lg outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <input
+                      type="password"
+                      placeholder="Confirm password"
+                      value={aiChatConfirmPassword}
+                      onChange={(e) => setAiChatConfirmPassword(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-background border rounded-lg outline-none focus:ring-2 focus:ring-primary"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Enter the password that was set when disabling to re-enable AI virtual chat for this persona.
+                  </p>
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={aiChatPassword}
+                    onChange={(e) => setAiChatPassword(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-background border rounded-lg outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </>
+              )}
+
+              {aiChatError && (
+                <div className="flex items-center gap-2 text-sm text-red-500 mt-3">
+                  <AlertCircle className="h-4 w-4" />
+                  {aiChatError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowAiChatModal(null)}
+                  className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={showAiChatModal === "disable" ? handleDisableAiChat : handleEnableAiChat}
+                  disabled={aiChatLoading}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg disabled:opacity-50 ${
+                    showAiChatModal === "disable"
+                      ? "bg-red-600 text-white hover:bg-red-700"
+                      : "bg-green-600 text-white hover:bg-green-700"
+                  }`}
+                >
+                  {aiChatLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : showAiChatModal === "disable" ? (
+                    "Disable"
+                  ) : (
+                    "Enable"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Activity Chart */}
         <div className="rounded-xl border bg-card p-6">

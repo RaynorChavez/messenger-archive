@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, extract
 from typing import Optional, Literal, Dict, Any
 from datetime import datetime, timedelta
+from pydantic import BaseModel
 import logging
 import threading
+import bcrypt
 
 from ..db import get_db, Person, Message, Room, RoomMember, SessionLocal
 from ..auth import get_current_session
@@ -62,7 +64,8 @@ async def list_people(
                 notes=person.notes,
                 message_count=message_count or 0,
                 last_message_at=last_message_at,
-                created_at=person.created_at
+                created_at=person.created_at,
+                ai_chat_enabled=person.ai_chat_enabled
             ))
     else:
         # No room filter - show all people with global message counts
@@ -97,7 +100,8 @@ async def list_people(
                 notes=person.notes,
                 message_count=message_count or 0,
                 last_message_at=last_message_at,
-                created_at=person.created_at
+                created_at=person.created_at,
+                ai_chat_enabled=person.ai_chat_enabled
             ))
     
     return PersonListResponse(people=people, total=len(people))
@@ -607,4 +611,102 @@ async def get_person_activity(
         "total_messages": total_messages,
         "most_active_day": most_active_day,
         "most_active_hour": most_active_hour
+    }
+
+
+# --- AI Chat Opt-Out Endpoints ---
+
+class AIDisableRequest(BaseModel):
+    password: str
+
+class AIEnableRequest(BaseModel):
+    password: str
+
+
+@router.get("/{person_id}/ai-chat/status")
+async def get_ai_chat_status(
+    person_id: int,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Get AI chat opt-out status for a person."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    return {
+        "person_id": person_id,
+        "enabled": person.ai_chat_enabled,
+        "has_password": person.ai_chat_password_hash is not None
+    }
+
+
+@router.post("/{person_id}/ai-chat/disable")
+async def disable_ai_chat(
+    person_id: int,
+    request: AIDisableRequest,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Disable AI chat for a person. Requires setting a password to re-enable."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    if not person.ai_chat_enabled:
+        raise HTTPException(status_code=400, detail="AI chat is already disabled")
+    
+    if len(request.password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    
+    # Hash password and disable
+    password_hash = bcrypt.hashpw(request.password.encode('utf-8'), bcrypt.gensalt())
+    person.ai_chat_password_hash = password_hash.decode('utf-8')
+    person.ai_chat_enabled = False
+    db.commit()
+    
+    # Invalidate persona cache
+    get_persona_cache().invalidate(person_id)
+    
+    return {
+        "message": "AI chat disabled successfully",
+        "person_id": person_id,
+        "enabled": False
+    }
+
+
+@router.post("/{person_id}/ai-chat/enable")
+async def enable_ai_chat(
+    person_id: int,
+    request: AIEnableRequest,
+    db: Session = Depends(get_db),
+    session: str = Depends(get_current_session),
+):
+    """Re-enable AI chat for a person. Requires the password set when disabling."""
+    person = db.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    if person.ai_chat_enabled:
+        raise HTTPException(status_code=400, detail="AI chat is already enabled")
+    
+    if not person.ai_chat_password_hash:
+        raise HTTPException(status_code=400, detail="No password set - cannot verify")
+    
+    # Verify password
+    if not bcrypt.checkpw(request.password.encode('utf-8'), person.ai_chat_password_hash.encode('utf-8')):
+        raise HTTPException(status_code=403, detail="Incorrect password")
+    
+    # Re-enable and clear password
+    person.ai_chat_enabled = True
+    person.ai_chat_password_hash = None
+    db.commit()
+    
+    # Invalidate persona cache
+    get_persona_cache().invalidate(person_id)
+    
+    return {
+        "message": "AI chat enabled successfully",
+        "person_id": person_id,
+        "enabled": True
     }
