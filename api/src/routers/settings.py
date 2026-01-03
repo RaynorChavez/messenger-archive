@@ -8,7 +8,7 @@ from datetime import datetime
 import httpx
 
 from ..db import get_db, Message, ImageDescription
-from ..auth import get_current_session
+from ..auth import get_current_session, get_current_session_or_internal
 from ..services.image_description import get_image_description_service
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -100,7 +100,7 @@ class ImageProcessingResponse(BaseModel):
 async def process_pending_images(
     limit: int = 10,
     db: Session = Depends(get_db),
-    session: str = Depends(get_current_session),
+    session: str = Depends(get_current_session_or_internal),
 ):
     """Process pending images through Gemini Vision to generate descriptions."""
     service = get_image_description_service()

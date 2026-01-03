@@ -399,7 +399,7 @@ class ArchiveClient:
             logger.error(f"Error archiving media message: {e}")
     
     async def _queue_image_for_processing(self, message_id: int, media_url: str):
-        """Queue an image for AI description processing."""
+        """Queue an image for AI description processing and trigger processing."""
         try:
             # Extract media_id from mxc:// URL
             # Format: mxc://server/media_id
@@ -424,8 +424,34 @@ class ArchiveClient:
             self.db.commit()
             logger.debug(f"Queued image {media_id} for processing")
             
+            # Trigger immediate processing via API
+            asyncio.create_task(self._process_image(message_id))
+            
         except Exception as e:
             logger.debug(f"Could not queue image for processing: {e}")
+    
+    async def _process_image(self, message_id: int):
+        """Trigger image processing via API. Non-blocking, logs errors."""
+        try:
+            api_url = settings.api_url or "http://api:8000"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{api_url}/api/settings/images/process",
+                    params={"limit": 1},
+                    headers={"X-Internal-API-Key": "internal-archive-service-key"},
+                    timeout=60.0  # Image processing can take a while
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("processed", 0) > 0:
+                        logger.info(f"Processed image for message {message_id}")
+                elif response.status_code == 503:
+                    # Service not initialized (no Gemini API key), skip silently
+                    pass
+                else:
+                    logger.warning(f"Failed to process image {message_id}: {response.status_code}")
+        except Exception as e:
+            logger.debug(f"Could not process image: {e}")
     
     async def _embed_message(self, message_id: int):
         """Embed a message for semantic search. Non-blocking, logs errors."""
