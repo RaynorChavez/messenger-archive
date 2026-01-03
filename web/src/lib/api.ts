@@ -121,6 +121,9 @@ export interface Message {
   sender: Person | null;
   reply_to_message_id: number | null;
   reply_to_sender: Person | null;
+  message_type: string | null;
+  media_url: string | null;
+  image_description: string | null;
 }
 
 export interface MessageListResponse {

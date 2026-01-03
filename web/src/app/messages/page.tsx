@@ -127,7 +127,16 @@ function MessagesContent() {
                       {formatRelativeTime(msg.timestamp)}
                     </span>
                   </div>
-                  <p className="mt-1 text-sm">{msg.content}</p>
+                  {msg.message_type === 'image' ? (
+                    <p className="mt-1 text-sm">
+                      <span className="text-muted-foreground">{msg.content}</span>
+                      {msg.image_description && (
+                        <span className="ml-2 text-foreground">{msg.image_description}</span>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm">{msg.content}</p>
+                  )}
                 </div>
               </div>
             ))}
