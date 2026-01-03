@@ -134,6 +134,10 @@ deploy_app() {
             exit 1
         fi
         
+        echo "=== Fixing Synapse permissions ==="
+        # Synapse runs as UID 991 inside the container, ensure it can write to media_store
+        sudo chown -R 991:991 /opt/messenger-archive/config/synapse/
+        
         echo "=== Building containers (API URL: $NEXT_PUBLIC_API_URL) ==="
         # Pass the API URL as a build arg for the web container
         NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" docker compose -f docker-compose.prod.yml build --pull
@@ -399,6 +403,9 @@ migrate_media() {
     rsync -avz --progress \
         "$LOCAL_MEDIA/" \
         ubuntu@"$SERVER_IP":/opt/messenger-archive/config/synapse/media_store/
+    
+    # Fix permissions - Synapse runs as UID 991 inside the container
+    ssh ubuntu@"$SERVER_IP" "sudo chown -R 991:991 /opt/messenger-archive/config/synapse/"
     
     # Also sync the Synapse media database tables
     log_info "Syncing Synapse media database tables..."
