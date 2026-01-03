@@ -222,9 +222,17 @@ class ImageDescriptionService:
             
             # Parse JSON response
             if response.text:
-                result = json.loads(response.text)
-                description = result.get("description", "").strip()
-                ocr_text = result.get("ocr_text", "").strip()
+                try:
+                    result = json.loads(response.text)
+                    description = result.get("description", "").strip()
+                    ocr_text = result.get("ocr_text", "").strip()
+                except json.JSONDecodeError as je:
+                    # Log the raw response for debugging
+                    logger.warning(f"JSON decode error for {image_desc.media_id}: {je}. Raw response: {response.text[:500]}")
+                    # Try to extract content anyway - sometimes the model returns partial JSON
+                    raw = response.text.strip()
+                    description = raw[:1000] if raw else None
+                    ocr_text = None
                 
                 # Treat empty ocr_text as None
                 if not ocr_text:
