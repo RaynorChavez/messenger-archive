@@ -224,36 +224,15 @@ class ImageDescriptionService:
         description = None
         ocr_text = None
         
-        # Try to find DESCRIPTION: and TEXT: sections
-        text_upper = response_text.upper()
-        desc_start = text_upper.find('DESCRIPTION:')
-        text_start = text_upper.find('TEXT:')
-        
-        if desc_start != -1:
-            # Extract from after "DESCRIPTION:" to either TEXT: or end
-            desc_content_start = desc_start + len('DESCRIPTION:')
-            if text_start != -1 and text_start > desc_start:
-                description = response_text[desc_content_start:text_start].strip()
-            else:
-                description = response_text[desc_content_start:].strip()
-        
-        if text_start != -1:
-            # Extract from after "TEXT:" to end
-            text_content_start = text_start + len('TEXT:')
-            text_content = response_text[text_content_start:].strip()
-            # Remove trailing content if there's another section
-            if '\n' in text_content:
-                # Take until we hit an empty line or another label
-                lines = text_content.split('\n')
-                text_lines = []
-                for line in lines:
-                    if line.strip() and not any(line.upper().strip().startswith(label) for label in ['DESCRIPTION:', 'TEXT:']):
-                        text_lines.append(line.strip())
-                    elif not line.strip():
-                        break
-                text_content = ' '.join(text_lines)
-            if text_content.lower() != 'none':
-                ocr_text = text_content
+        lines = response_text.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.upper().startswith('DESCRIPTION:'):
+                description = line[12:].strip()
+            elif line.upper().startswith('TEXT:'):
+                text = line[5:].strip()
+                if text.lower() != 'none':
+                    ocr_text = text
         
         # Fallback if format wasn't followed
         if not description and response_text:
