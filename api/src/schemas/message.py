@@ -21,6 +21,9 @@ class MessageResponse(BaseModel):
     sender: Optional[PersonBrief] = None
     reply_to_message_id: Optional[int] = None
     reply_to_sender: Optional[PersonBrief] = None
+    message_type: Optional[str] = "text"
+    media_url: Optional[str] = None
+    image_description: Optional[str] = None
     
     class Config:
         from_attributes = True

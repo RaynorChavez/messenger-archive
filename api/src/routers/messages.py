@@ -4,7 +4,7 @@ from sqlalchemy import func, desc
 from typing import Optional
 from datetime import datetime
 
-from ..db import get_db, Message, Person
+from ..db import get_db, Message, Person, ImageDescription
 from ..auth import get_current_scope, get_allowed_room_ids, Scope
 from ..schemas.message import MessageResponse, MessageListResponse, PersonBrief
 
@@ -53,6 +53,16 @@ async def list_messages(
     offset = (page - 1) * page_size
     messages = query.order_by(desc(Message.timestamp)).offset(offset).limit(page_size).all()
     
+    # Get image descriptions for image messages in batch
+    image_message_ids = [msg.id for msg in messages if getattr(msg, 'message_type', 'text') == 'image']
+    image_descriptions = {}
+    if image_message_ids:
+        img_descs = db.query(ImageDescription).filter(
+            ImageDescription.message_id.in_(image_message_ids)
+        ).all()
+        for img_desc in img_descs:
+            image_descriptions[img_desc.message_id] = img_desc
+    
     # Build response
     message_responses = []
     for msg in messages:
@@ -72,13 +82,26 @@ async def list_messages(
                 avatar_url=msg.reply_to.sender.avatar_url
             )
         
+        # Build image description text if available
+        image_desc_text = None
+        message_type = getattr(msg, 'message_type', 'text') or 'text'
+        if message_type == 'image' and msg.id in image_descriptions:
+            img_desc = image_descriptions[msg.id]
+            if img_desc.description:
+                image_desc_text = f"[[{img_desc.description}]]"
+                if img_desc.ocr_text:
+                    image_desc_text += f" [[Text in image: {img_desc.ocr_text}]]"
+        
         message_responses.append(MessageResponse(
             id=msg.id,
             content=msg.content,
             timestamp=msg.timestamp,
             sender=sender_brief,
             reply_to_message_id=msg.reply_to_message_id,
-            reply_to_sender=reply_to_sender
+            reply_to_sender=reply_to_sender,
+            message_type=message_type,
+            media_url=getattr(msg, 'media_url', None),
+            image_description=image_desc_text
         ))
     
     total_pages = (total + page_size - 1) // page_size
@@ -121,6 +144,16 @@ async def search_messages(
     offset = (page - 1) * page_size
     messages = query.order_by(desc(Message.timestamp)).offset(offset).limit(page_size).all()
     
+    # Get image descriptions for image messages in batch
+    image_message_ids = [msg.id for msg in messages if getattr(msg, 'message_type', 'text') == 'image']
+    image_descriptions = {}
+    if image_message_ids:
+        img_descs = db.query(ImageDescription).filter(
+            ImageDescription.message_id.in_(image_message_ids)
+        ).all()
+        for img_desc in img_descs:
+            image_descriptions[img_desc.message_id] = img_desc
+    
     message_responses = []
     for msg in messages:
         sender_brief = None
@@ -131,13 +164,26 @@ async def search_messages(
                 avatar_url=msg.sender.avatar_url
             )
         
+        # Build image description text if available
+        image_desc_text = None
+        message_type = getattr(msg, 'message_type', 'text') or 'text'
+        if message_type == 'image' and msg.id in image_descriptions:
+            img_desc = image_descriptions[msg.id]
+            if img_desc.description:
+                image_desc_text = f"[[{img_desc.description}]]"
+                if img_desc.ocr_text:
+                    image_desc_text += f" [[Text in image: {img_desc.ocr_text}]]"
+        
         message_responses.append(MessageResponse(
             id=msg.id,
             content=msg.content,
             timestamp=msg.timestamp,
             sender=sender_brief,
             reply_to_message_id=msg.reply_to_message_id,
-            reply_to_sender=None
+            reply_to_sender=None,
+            message_type=message_type,
+            media_url=getattr(msg, 'media_url', None),
+            image_description=image_desc_text
         ))
     
     total_pages = (total + page_size - 1) // page_size
@@ -176,11 +222,26 @@ async def get_message(
             avatar_url=msg.sender.avatar_url
         )
     
+    # Get image description if this is an image message
+    image_desc_text = None
+    message_type = getattr(msg, 'message_type', 'text') or 'text'
+    if message_type == 'image':
+        img_desc = db.query(ImageDescription).filter(
+            ImageDescription.message_id == msg.id
+        ).first()
+        if img_desc and img_desc.description:
+            image_desc_text = f"[[{img_desc.description}]]"
+            if img_desc.ocr_text:
+                image_desc_text += f" [[Text in image: {img_desc.ocr_text}]]"
+    
     return MessageResponse(
         id=msg.id,
         content=msg.content,
         timestamp=msg.timestamp,
         sender=sender_brief,
         reply_to_message_id=msg.reply_to_message_id,
-        reply_to_sender=None
+        reply_to_sender=None,
+        message_type=message_type,
+        media_url=getattr(msg, 'media_url', None),
+        image_description=image_desc_text
     )
