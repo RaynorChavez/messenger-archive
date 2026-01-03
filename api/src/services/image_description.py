@@ -6,6 +6,7 @@ Processes images through Gemini to generate descriptions and extract text (OCR).
 
 import os
 import io
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,15 +31,37 @@ MAX_IMAGE_DIMENSION = 1024  # Max width or height
 # Gemini model (same as elsewhere in the project)
 MODEL = "gemini-3-flash-preview"
 
-DESCRIPTION_PROMPT = """Analyze this image and provide:
-1. A concise description of what the image shows (1-2 sentences)
-2. Any text visible in the image (transcribe it exactly)
+DESCRIPTION_PROMPT = """Analyze this image from a group chat. Provide:
 
-Format your response as:
-DESCRIPTION: [your description here]
-TEXT: [any text found, or "None" if no text]
+1. DESCRIPTION: A detailed visual description of the image. Include:
+   - What type of image it is (photo, meme, screenshot, diagram, artwork, etc.)
+   - Key visual elements, colors, people, objects, or scenes shown
+   - For memes: describe the template/format and the joke
+   - For screenshots: describe what app/website and the key content shown
+   - Do NOT start with "This image is..." - just describe what you see
 
-Be concise and factual. Focus on the main content of the image."""
+2. OCR_TEXT: Transcribe ALL visible text in the image exactly as written. Include:
+   - All chat messages, captions, labels, watermarks, usernames
+   - Preserve line breaks and formatting where meaningful
+   - If no text is visible, return empty string
+
+Be specific and descriptive. This description will be used to search and understand the image later."""
+
+# JSON schema for structured output
+IMAGE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description": {
+            "type": "string",
+            "description": "Detailed visual description of the image content, style, and elements"
+        },
+        "ocr_text": {
+            "type": "string",
+            "description": "Complete transcription of ALL visible text in the image. Empty string if no text."
+        }
+    },
+    "required": ["description", "ocr_text"]
+}
 
 
 def get_media_path(media_id: str) -> Path:
@@ -182,7 +205,7 @@ class ImageDescriptionService:
             if original_size != len(image_bytes):
                 logger.info(f"Resized image from {original_size} to {len(image_bytes)} bytes")
             
-            # Call Gemini Vision
+            # Call Gemini Vision with JSON schema
             response = self.client.models.generate_content(
                 model=MODEL,
                 contents=[
@@ -191,20 +214,29 @@ class ImageDescriptionService:
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0.3,
-                    max_output_tokens=500
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                    response_schema=IMAGE_RESPONSE_SCHEMA
                 )
             )
             
-            # Parse response
+            # Parse JSON response
             if response.text:
-                description, ocr_text = self._parse_response(response.text)
+                result = json.loads(response.text)
+                description = result.get("description", "").strip()
+                ocr_text = result.get("ocr_text", "").strip()
+                
+                # Treat empty ocr_text as None
+                if not ocr_text:
+                    ocr_text = None
+                
                 image_desc.description = description
                 image_desc.ocr_text = ocr_text
                 image_desc.processed_at = datetime.now(timezone.utc)
                 image_desc.error = None
                 db.commit()
                 
-                logger.info(f"Processed image {image_desc.media_id}: {description[:50]}...")
+                logger.info(f"Processed image {image_desc.media_id}: {description[:50] if description else 'no description'}...")
                 return True
             else:
                 image_desc.error = "Empty response from Gemini"
@@ -218,27 +250,6 @@ class ImageDescriptionService:
             image_desc.processed_at = datetime.now(timezone.utc)
             db.commit()
             return False
-    
-    def _parse_response(self, response_text: str) -> tuple[Optional[str], Optional[str]]:
-        """Parse Gemini response to extract description and OCR text."""
-        description = None
-        ocr_text = None
-        
-        lines = response_text.strip().split('\n')
-        for line in lines:
-            line = line.strip()
-            if line.upper().startswith('DESCRIPTION:'):
-                description = line[12:].strip()
-            elif line.upper().startswith('TEXT:'):
-                text = line[5:].strip()
-                if text.lower() != 'none':
-                    ocr_text = text
-        
-        # Fallback if format wasn't followed
-        if not description and response_text:
-            description = response_text.strip()[:500]
-        
-        return description, ocr_text
     
     def process_pending_images(self, db: Session, limit: int = 10) -> int:
         """
